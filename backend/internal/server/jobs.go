@@ -63,7 +63,7 @@ func (s *Server) runAnalysis(id string) {
 		}
 	}
 	stage("extract", fmt.Sprintf("Слов в тексте: %d", len(analysis.Word.FindAllStringIndex(doc.Content, -1))))
-	useAI := doc.AIModel != "" && s.cfg.AI != nil
+	useAI := doc.AIModel != "" && doc.AIModel != pendingAI && s.cfg.AI != nil
 	result := analysis.AnalyzeWith(doc.Content, analysis.Options{Depth: doc.Depth, Progress: func(name, note string) {
 		if name == "report" && useAI {
 			return // The report stage follows the model's refinement.
@@ -90,6 +90,9 @@ func (s *Server) runAnalysis(id string) {
 		}
 	}
 	note := fmt.Sprintf("Персонажей: %d · сущностей: %d · связей: %d", persons, len(result.Entities), len(result.Edges))
+	if doc.AIModel == pendingAI {
+		note += " · Qwen пока не подключена: текст перепроверится автоматически, когда она заработает"
+	}
 	if result.AI != nil {
 		if result.AI.Error != "" {
 			note += " · Qwen не ответила, использован локальный анализ"
@@ -112,6 +115,53 @@ func (s *Server) resumeInterrupted() {
 	for _, id := range ids {
 		s.enqueue(id)
 	}
+}
+
+const pendingAI = "pending"
+
+// watchAI re-runs analyses that were done without Qwen once Qwen answers.
+// Documents with notes are left alone because notes may point at entity ids.
+func (s *Server) watchAI() {
+	if s.cfg.AI == nil {
+		return
+	}
+	s.jobs.Add(1)
+	go func() {
+		defer s.jobs.Done()
+		ticker := time.NewTicker(s.aiPoll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stop:
+				return
+			case <-ticker.C:
+			}
+			ctx := context.Background()
+			st := s.cfg.AI.Status(ctx)
+			if !st.Available {
+				continue
+			}
+			ids, err := s.store.PendingAI(ctx)
+			if err != nil {
+				log.Printf("pending Qwen analyses: %v", err)
+				continue
+			}
+			for _, id := range ids {
+				if n, err := s.store.NoteCount(ctx, id); err != nil || n > 0 {
+					s.store.SetAIModel(ctx, id, "")
+					continue
+				}
+				doc, err := s.store.Document(ctx, id)
+				if err != nil {
+					continue
+				}
+				if err := s.store.StartAnalysis(ctx, id, doc.Depth, st.Model); err == nil {
+					log.Printf("Qwen is available: re-analysing %s", id)
+					s.enqueue(id)
+				}
+			}
+		}
+	}()
 }
 
 // ready rejects operations that need a finished analysis.

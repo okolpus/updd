@@ -261,3 +261,8 @@ body{background:var(--sq-bg)}
 .ai-description{margin:10px 0 4px!important;font-size:14px}
 .ai-summary{margin:4px 0 20px}
 .qa-mode{margin-left:8px}
+.ai-banner{display:flex;align-items:flex-start;gap:12px;margin:16px 40px 0;padding:14px 16px;border-radius:14px;background:#faf5ff;border:1px solid #e9d5ff;color:#4c1d95;font-size:13.5px;line-height:1.55}
+.ai-banner>svg{flex:none;color:#7c3aed;margin-top:2px}
+.ai-banner>div{flex:1}
+.ai-banner code{background:#ede9fe;padding:1px 6px;border-radius:6px;font-size:12.5px}
+@media (max-width:900px){.ai-banner{margin:12px 16px 0;flex-wrap:wrap}}

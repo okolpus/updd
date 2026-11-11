@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Avatar, Button, Checkbox, Drawer, Input, Space, Tabs, Tooltip, Typography } from 'antd';
 import {
   ArrowLeft, BarChart3, BookOpen, ChevronRight, Download, FilePlus2, FileText, HelpCircle, LogOut, Menu,
-  MessageSquare, Network, PenLine, Pencil, Search, Trash2, Upload as UploadIcon, UserCog,
+  MessageSquare, Network, PenLine, Pencil, Search, Sparkles, Trash2, Upload as UploadIcon, UserCog,
 } from 'lucide-react';
 import { createRequestGuard } from './requestGuard.js';
 import { fileProblem, hasFiles } from './files.js';
@@ -110,6 +110,14 @@ export default function App() {
     if (!user) { setAiStatus(null); return; }
     api('/ai').then(setAiStatus).catch(() => setAiStatus(null));
   }, [user, view]);
+  useEffect(() => {
+    if (!user || !aiStatus?.enabled || aiStatus.available) return undefined;
+    const t = setInterval(() => api('/ai').then(setAiStatus).catch(() => {}), 15000);
+    return () => clearInterval(t);
+  }, [user, aiStatus]);
+  // When Qwen comes online, pending texts are re-analysed by the server; refresh the cards.
+  const anyPending = documents.some(d => d.ai_model === 'pending');
+  useEffect(() => { if (user && aiStatus?.available && anyPending) loadDocuments(); }, [user, aiStatus?.available, anyPending, loadDocuments]);
   // While something is being analysed, refresh the library so cards show live progress.
   const anyProcessing = documents.some(d => d.status === 'processing');
   useEffect(() => {
@@ -157,7 +165,6 @@ export default function App() {
     const body = new FormData();
     body.append('file', file);
     for (const key of ['title', 'author', 'genre', 'subgenre', 'depth']) if (meta[key]) body.append(key, meta[key]);
-    if (meta.ai) body.append('ai', '1');
     if (meta.year) body.append('year', String(meta.year));
     return body;
   }
@@ -367,13 +374,18 @@ export default function App() {
     </Drawer> : <aside className="sq-sidebar">{sidebar}</aside>}
     <main className={`sq-main ${view === 'document' ? 'is-doc' : ''}`}>
       {header}
+      {aiStatus?.enabled && !aiStatus.available && view !== 'document' && <div className="ai-banner" role="status">
+        <Sparkles size={18} />
+        <div><strong>Qwen не подключена.</strong> {aiStatus.reason} Тексты пока разбираются упрощённо и будут перепроверены Qwen автоматически.
+          Проще всего перезапустить приложение командой <code>bash start.sh</code>: оно само установит и запустит Ollama и скачает модель.</div>
+        <Button size="small" onClick={() => api('/ai').then(setAiStatus).catch(() => {})}>Проверить снова</Button>
+      </div>}
       {error && <div className="sq-error"><ErrorBox error={error} /></div>}
       <div className="sq-content">
         {view === 'library' && <LibraryScreen documents={documents} failed={failed} filters={libFilters} setFilters={setLibFilters} query={query}
           onAdd={() => navigate('add')} onOpen={d => openDoc(d.id)} onFiles={uploadFiles}
           onDelete={d => { setTarget(d); setModal('delete'); }} onEdit={d => { setTarget(d); setModal('meta'); }}
           onRetry={async d => { try { await retryAnalysis(d.id); showProgress(d); } catch { /* error shown */ } }}
-          onRefine={aiStatus?.available ? async d => { try { await retryAnalysis(d.id, { ai: true }); showProgress(d); } catch { /* error shown */ } } : null}
           onReplaceFailed={replaceFailed} onDismissFailed={id => setFailed(list => list.filter(x => x.id !== id))} />}
         {view === 'add' && <AddTextScreen onSubmit={submitAdd} onCancel={() => navigate('library')} busy={submitting} registerDrop={registerAddDrop} ai={aiStatus} />}
         {view === 'progress' && progressId && <ProgressScreen key={progressId} id={progressId}

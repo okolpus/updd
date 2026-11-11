@@ -123,7 +123,6 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request, user *sto
 type docInput struct {
 	title, author, genre, content string
 	subgenre, depth, source       string
-	ai                            bool
 	year                          *int
 }
 
@@ -176,11 +175,7 @@ func (s *Server) finishCreate(w http.ResponseWriter, r *http.Request, user *stor
 	if in.source == "" {
 		in.source = "text"
 	}
-	aiModel, msg := s.aiModel(r, in.ai)
-	if msg != "" {
-		fail(w, http.StatusUnprocessableEntity, msg)
-		return
-	}
+	aiModel := s.aiModel(r)
 	// The text is stored right away; entities and links are computed in the background.
 	doc := &store.Document{ID: uid(), UserID: user.ID, Title: in.title, Author: in.author, Year: in.year, Genre: in.genre,
 		CreatedAt: store.Now(), Content: content, Analysis: placeholderAnalysis(), Status: "processing", Progress: stageProgress["extract"],
@@ -220,11 +215,7 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request, user *st
 	in.subgenre, _, okSub = field(body, "subgenre")
 	in.depth, _, okDepth = field(body, "depth")
 	okGenre = okGenre && okSub && okDepth
-	if raw, ok := body["ai"]; ok && string(raw) != "null" {
-		if json.Unmarshal(raw, &in.ai) != nil {
-			okGenre = false
-		}
-	}
+
 	in.year, okYear = intField(body, "year")
 	if !okTitle || !okAuthor || !okGenre || !okContent || !okYear {
 		fail(w, http.StatusUnprocessableEntity, "Проверьте поля формы.")
@@ -269,7 +260,7 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request, user *st
 		return
 	}
 	in := docInput{title: r.FormValue("title"), author: r.FormValue("author"), genre: r.FormValue("genre"), content: content,
-		subgenre: r.FormValue("subgenre"), depth: r.FormValue("depth"), ai: truthy(r.FormValue("ai")), source: strings.TrimPrefix(strings.ToLower(path.Ext(header.Filename)), ".")}
+		subgenre: r.FormValue("subgenre"), depth: r.FormValue("depth"), source: strings.TrimPrefix(strings.ToLower(path.Ext(header.Filename)), ".")}
 	if strings.TrimSpace(in.title) == "" {
 		name := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
 		in.title = strings.TrimSuffix(name, path.Ext(name))
@@ -371,7 +362,7 @@ func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, user *store.U
 		fail(w, http.StatusConflict, "Анализ уже выполняется.")
 		return
 	}
-	depth, useAI := doc.Depth, doc.AIModel != ""
+	depth := doc.Depth
 	if r.ContentLength > 0 {
 		body, ok := decode(w, r)
 		if !ok {
@@ -380,16 +371,9 @@ func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, user *store.U
 		if value, present, ok := field(body, "depth"); present && ok && value != "" {
 			depth = value
 		}
-		if raw, ok := body["ai"]; ok {
-			json.Unmarshal(raw, &useAI)
-		}
 	}
 	depth = normalizeDepth(depth)
-	aiModel, msg := s.aiModel(r, useAI)
-	if msg != "" {
-		fail(w, http.StatusUnprocessableEntity, msg)
-		return
-	}
+	aiModel := s.aiModel(r)
 	if err := s.store.StartAnalysis(r.Context(), doc.ID, depth, aiModel); err != nil {
 		serverError(w, err)
 		return
@@ -604,19 +588,15 @@ func (s *Server) exportPNG(w http.ResponseWriter, r *http.Request, user *store.U
 	w.Write(data)
 }
 
-func truthy(v string) bool {
-	v = strings.ToLower(strings.TrimSpace(v))
-	return v == "1" || v == "true" || v == "on" || v == "yes"
-}
-
-// aiModel returns the model to use when refinement was requested, or a message why it cannot be used.
-func (s *Server) aiModel(r *http.Request, requested bool) (string, string) {
-	if !requested {
-		return "", ""
+// aiModel picks the model for a new analysis. Every analysis goes through Qwen:
+// when it is not reachable yet, the text is analysed locally and marked "pending",
+// and the watcher repeats the analysis with Qwen as soon as it answers.
+func (s *Server) aiModel(r *http.Request) string {
+	if s.cfg.AI == nil {
+		return ""
 	}
-	st := s.cfg.AI.Status(r.Context())
-	if !st.Available {
-		return "", "Qwen сейчас недоступна. " + st.Reason
+	if st := s.cfg.AI.Status(r.Context()); st.Available {
+		return st.Model
 	}
-	return st.Model, ""
+	return pendingAI
 }

@@ -7,14 +7,23 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"semanticatlas/backend/internal/llm"
 )
 
 // fakeOllama imitates the Ollama API with deterministic answers.
 func fakeOllama(t *testing.T, broken bool) (*httptest.Server, *int32) {
+	return fakeOllamaSwitch(t, broken, nil)
+}
+
+func fakeOllamaSwitch(t *testing.T, broken bool, down *atomic.Bool) (*httptest.Server, *int32) {
 	var chats int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down != nil && down.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
 		switch r.URL.Path {
 		case "/api/tags":
 			w.Write([]byte(`{"models":[{"name":"qwen3:4b"},{"name":"llama3:8b"}]}`))
@@ -74,7 +83,9 @@ func fakeOllama(t *testing.T, broken bool) (*httptest.Server, *int32) {
 }
 
 func aiServer(t *testing.T, ollamaURL string) *client {
-	s, err := New(Config{DataDir: t.TempDir(), SecretKey: "test-only-secret-key-which-is-long-enough", AI: llm.New(ollamaURL, "qwen3:4b")})
+	model := llm.New(ollamaURL, "qwen3:4b")
+	model.CacheTTL = time.Millisecond
+	s, err := New(Config{DataDir: t.TempDir(), SecretKey: "test-only-secret-key-which-is-long-enough", AI: model, AIPoll: 30 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +126,7 @@ func TestQwenRefinesAnalysisAndAnswers(t *testing.T) {
 	if st["available"] != true || st["model"] != "qwen3:4b" {
 		t.Fatalf("status: %v", st)
 	}
-	r := c.do("POST", "/api/documents", map[string]any{"title": "С Qwen", "content": sampleText, "ai": true})
+	r := c.do("POST", "/api/documents", map[string]any{"title": "С Qwen", "content": sampleText})
 	var created doc
 	r.json(t, &created)
 	c.waitReady(created.ID)
@@ -167,7 +178,7 @@ func TestQwenRefinesAnalysisAndAnswers(t *testing.T) {
 func TestQwenFailureKeepsLocalAnalysis(t *testing.T) {
 	ollama, _ := fakeOllama(t, true)
 	c := aiServer(t, ollama.URL)
-	r := c.do("POST", "/api/documents", map[string]any{"title": "Сбой", "content": sampleText, "ai": true})
+	r := c.do("POST", "/api/documents", map[string]any{"title": "Сбой", "content": sampleText})
 	var created doc
 	r.json(t, &created)
 	ready := c.waitReady(created.ID)
@@ -185,17 +196,54 @@ func TestQwenFailureKeepsLocalAnalysis(t *testing.T) {
 	}
 }
 
-func TestQwenUnavailable(t *testing.T) {
-	c := aiServer(t, "http://127.0.0.1:1") // nothing listens here
+func TestEveryAnalysisGoesThroughQwenOnceItIsUp(t *testing.T) {
+	var down atomic.Bool
+	down.Store(true)
+	ollama, _ := fakeOllamaSwitch(t, false, &down)
+	c := aiServer(t, ollama.URL)
 	var st map[string]any
 	c.do("GET", "/api/ai", nil).json(t, &st)
-	if st["available"] != false || !strings.Contains(st["reason"].(string), "Ollama") {
+	if st["available"] != false {
+		t.Fatalf("status while down: %v", st)
+	}
+	// Qwen is down: the text is still analysed locally and marked as waiting for Qwen.
+	r := c.do("POST", "/api/documents", map[string]any{"title": "Ждёт Qwen", "content": sampleText})
+	if r.status != 201 {
+		t.Fatalf("create: %d %s", r.status, r.body)
+	}
+	var created doc
+	r.json(t, &created)
+	c.waitReady(created.ID)
+	var d aiDoc
+	c.do("GET", "/api/documents/"+created.ID, nil).json(t, &d)
+	if d.AIModel != "pending" || !strings.Contains(d.Note, "перепроверится") {
+		t.Fatalf("pending: %s %s", d.AIModel, d.Note)
+	}
+	// Qwen comes online: the watcher repeats the analysis with it.
+	down.Store(false)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		c.do("GET", "/api/documents/"+created.ID, nil).json(t, &d)
+		if d.Status == "ready" && d.AIModel == "qwen3:4b" && d.Analysis.AI != nil {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("not re-analysed with Qwen: %s %s %+v", d.Status, d.AIModel, d.Analysis.AI)
+}
+
+func TestQwenOff(t *testing.T) {
+	c := newClient(t, newTestServer(t)) // AI nil = ATLAS_AI=off
+	c.register()
+	var st map[string]any
+	c.do("GET", "/api/ai", nil).json(t, &st)
+	if st["enabled"] != false {
 		t.Fatalf("status: %v", st)
 	}
-	if r := c.do("POST", "/api/documents", map[string]any{"title": "Нет", "content": sampleText, "ai": true}); r.status != 422 {
-		t.Fatalf("ai without ollama: %d %s", r.status, r.body)
-	}
-	if r := c.do("POST", "/api/documents", map[string]any{"title": "Без ИИ", "content": sampleText}); r.status != 201 {
-		t.Fatalf("plain create: %d", r.status)
+	d := c.document(sampleText)
+	var full aiDoc
+	c.do("GET", "/api/documents/"+d.ID, nil).json(t, &full)
+	if full.AIModel != "" {
+		t.Fatalf("ai model with AI off: %q", full.AIModel)
 	}
 }

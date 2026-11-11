@@ -26,6 +26,9 @@ type Client struct {
 	Model string
 	http  *http.Client
 
+	// CacheTTL is how long a status check is reused (default 10s).
+	CacheTTL time.Duration
+
 	mu      sync.Mutex
 	cached  Status
 	checked time.Time
@@ -63,7 +66,11 @@ func (c *Client) Status(ctx context.Context) Status {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if time.Since(c.checked) < 10*time.Second {
+	ttl := c.CacheTTL
+	if ttl == 0 {
+		ttl = 10 * time.Second
+	}
+	if time.Since(c.checked) < ttl {
 		return c.cached
 	}
 	st := Status{Enabled: true, Model: c.Model, URL: c.URL, Models: []string{}}
@@ -72,7 +79,7 @@ func (c *Client) Status(ctx context.Context) Status {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/api/tags", nil)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		st.Reason = "Ollama не запущена. Установите Ollama и запустите её, затем скачайте модель: ollama pull " + c.Model
+		st.Reason = "Ollama не запущена. Установите Ollama и запустите её, затем скачайте модель: ollama pull " + c.Model + "."
 	} else {
 		defer resp.Body.Close()
 		var tags struct {
@@ -90,7 +97,7 @@ func (c *Client) Status(ctx context.Context) Status {
 				}
 			}
 			if !st.Available {
-				st.Reason = "Модель " + c.Model + " не скачана. Выполните: ollama pull " + c.Model
+				st.Reason = "Модель " + c.Model + " не скачана. Выполните: ollama pull " + c.Model + "."
 			}
 		}
 	}

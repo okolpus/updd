@@ -421,3 +421,34 @@ func (s *Store) ProcessingIDs(ctx context.Context) ([]string, error) {
 	}
 	return ids, rows.Err()
 }
+
+// PendingAI lists ready documents that were analysed while the language model was unavailable.
+func (s *Store) PendingAI(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM documents WHERE status = 'ready' AND ai_model = 'pending'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// NoteCount tells whether a document has notes (they may point at entity ids).
+func (s *Store) NoteCount(ctx context.Context, documentID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM notes WHERE document_id = ?`), documentID).Scan(&n)
+	return n, err
+}
+
+// SetAIModel changes the requested model without touching the analysis.
+func (s *Store) SetAIModel(ctx context.Context, id, model string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET ai_model = ? WHERE id = ?`), model, id)
+	return err
+}

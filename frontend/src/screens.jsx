@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AutoComplete, Button, Dropdown, Input, InputNumber, Switch, Tooltip } from 'antd';
+import { AutoComplete, Button, Dropdown, Input, InputNumber, Tooltip } from 'antd';
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Calendar, Check, CheckCircle2, ChevronDown, ClipboardPaste,
   Clock, Cog, FileText, FlaskConical, GraduationCap, Loader2, MoreVertical, Network, Plus, RotateCcw,
@@ -37,7 +37,7 @@ export const STAGES = [
   { key: 'report', label: 'Генерация отчёта', hint: 'Готовим аналитику по главам…', Icon: BarChart3 },
 ];
 const STAGE_PROGRESS = { extract: 5, entities: 20, relations: 45, graph: 75, ai: 82, report: 90, done: 100 };
-const stagesFor = status => status?.ai_model ? [...STAGES.slice(0, 4), AI_STAGE, STAGES[4]] : STAGES;
+const stagesFor = status => status?.ai_model && status.ai_model !== 'pending' ? [...STAGES.slice(0, 4), AI_STAGE, STAGES[4]] : STAGES;
 
 function FileTile({ genre, source }) {
   const { tone, Icon } = kindOf(genre);
@@ -60,17 +60,16 @@ function FilterButton({ icon: Icon, label, value, options, onChange }) {
   </Dropdown>;
 }
 
-function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry, onRefine }) {
+function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry }) {
   const processing = doc.status === 'processing', failed = doc.status === 'error';
   const menu = [
     { key: 'open', label: 'Открыть', disabled: failed },
     { key: 'edit', label: 'Изменить сведения' },
     { key: 'retry', label: 'Проанализировать заново', disabled: processing },
-    ...(onRefine && !doc.ai_model ? [{ key: 'refine', label: 'Уточнить с помощью Qwen', disabled: processing }] : []),
     { type: 'divider' },
     { key: 'delete', label: 'Удалить', danger: true },
   ];
-  const act = ({ key }) => ({ open: onOpen, edit: onEdit, retry: onRetry, refine: onRefine, delete: onDelete })[key]?.();
+  const act = ({ key }) => ({ open: onOpen, edit: onEdit, retry: onRetry, delete: onDelete })[key]?.();
   return <article className={`doc-card ${processing ? 'is-processing' : ''}`}>
     <div className="doc-card-top">
       <FileTile genre={doc.genre} source={doc.source} />
@@ -78,7 +77,8 @@ function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry, onRefine }) {
         <div className="doc-card-tags">
           <span className={`sq-tag tone-${kindOf(doc.genre).tone}`}>{doc.genre || 'Текст'}</span>
           <StatusTag status={doc.status} />
-          {doc.ai_model && <span className="sq-tag tone-purple"><Sparkles size={11} />Qwen</span>}
+          {doc.ai_model === 'pending' ? <span className="sq-tag tone-slate"><Sparkles size={11} />Ждёт Qwen</span>
+            : doc.ai_model && <span className="sq-tag tone-purple"><Sparkles size={11} />Qwen</span>}
         </div>
         <h3><button type="button" onClick={failed ? onRetry : onOpen}>{doc.title}</button></h3>
         <p>{doc.author || 'Автор не указан'}{doc.subgenre ? ` · ${doc.subgenre}` : ''}</p>
@@ -131,7 +131,7 @@ function FailedUploadCard({ item, onReplace, onDismiss }) {
   </article>;
 }
 
-export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, onOpen, onDelete, onEdit, onRetry, onRefine, onReplaceFailed, onDismissFailed, onFiles, query }) {
+export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, onOpen, onDelete, onEdit, onRetry, onReplaceFailed, onDismissFailed, onFiles, query }) {
   const authors = useMemo(() => [...new Set(documents.map(d => d.author).filter(Boolean))].sort(), [documents]);
   const subgenres = useMemo(() => [...new Set(documents.map(d => d.subgenre).filter(Boolean))].sort(), [documents]);
   const kinds = useMemo(() => [...new Set(documents.map(d => d.genre).filter(Boolean))], [documents]);
@@ -160,7 +160,7 @@ export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, o
     </div>}
     {!documents.length && !failed.length ? <EmptyLibrary onFiles={onFiles} onAdd={onAdd} query={query} /> : <div className="card-grid">
       {failed.map(item => <FailedUploadCard key={item.id} item={item} onReplace={f => onReplaceFailed(item, f)} onDismiss={() => onDismissFailed(item.id)} />)}
-      {shown.map(d => <DocumentCard key={d.id} doc={d} onOpen={() => onOpen(d)} onDelete={() => onDelete(d)} onEdit={() => onEdit(d)} onRetry={() => onRetry(d)} onRefine={onRefine ? () => onRefine(d) : null} />)}
+      {shown.map(d => <DocumentCard key={d.id} doc={d} onOpen={() => onOpen(d)} onDelete={() => onDelete(d)} onEdit={() => onEdit(d)} onRetry={() => onRetry(d)} />)}
       {!shown.length && !failed.length && <div className="grid-empty">Под выбранные фильтры ничего не подходит. <button type="button" className="link-button" onClick={() => setFilters({})}>Сбросить фильтры</button></div>}
     </div>}
   </div>;
@@ -205,7 +205,7 @@ const SUBGENRES = ['Роман', 'Повесть', 'Рассказ', 'Пьеса
 
 export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop, ai }) {
   const draft = useMemo(readDraft, []);
-  const [meta, setMeta] = useState({ title: '', author: '', year: null, subgenre: '', genre: 'Художественный', depth: 'full', ...draft.meta, ai: false });
+  const [meta, setMeta] = useState({ title: '', author: '', year: null, subgenre: '', genre: 'Художественный', depth: 'full', ...draft.meta });
   const [text, setText] = useState(draft.text || '');
   const [file, setFile] = useState(null);
   const [error, setError] = useState('');
@@ -267,11 +267,10 @@ export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop, ai }) {
           <div className={`ai-toggle ${ai?.available ? '' : 'disabled'}`}>
             <div className="ai-toggle-head">
               <span className="ai-icon"><Sparkles size={16} /></span>
-              <strong>Уточнить с помощью Qwen</strong>
-              <Switch size="small" checked={!!meta.ai && !!ai?.available} disabled={!ai?.available} onChange={v => set('ai', v)} aria-label="Уточнить с помощью Qwen" />
+              <strong>{ai?.available ? `Разбор через ${ai.model}` : 'Qwen не подключена'}</strong>
             </div>
-            <span>{ai?.available ? `Локальная нейросеть ${ai.model} проверит сущности, объединит дубли и подпишет связи. Займёт больше времени.`
-              : ai?.reason || 'Нейросеть не подключена.'}</span>
+            <span>{ai?.available ? 'Каждый текст проверяет локальная нейросеть Qwen: имена, дубли, подписи связей и ответы на вопросы.'
+              : `${ai?.reason || 'Нейросеть недоступна.'} Пока текст разберётся упрощённо и перепроверится Qwen автоматически, как только она заработает.`}</span>
           </div>
         </section>
       </div>

@@ -31,8 +31,9 @@ type Config struct {
 	SecretKey      string
 	CookieSecure   bool
 	FrontendOrigin string
-	Frontend       fs.FS       // built UI (index.html, assets/); nil disables the UI
-	AI             *llm.Client // local language model (Ollama); nil disables it
+	Frontend       fs.FS         // built UI (index.html, assets/); nil disables the UI
+	AI             *llm.Client   // local language model (Ollama); nil disables it
+	AIPoll         time.Duration // how often to look for Qwen coming online (default 20s)
 }
 
 type Server struct {
@@ -45,6 +46,8 @@ type Server struct {
 	slots  chan struct{}
 	// stageDelay slows analysis stages down; used only by tests.
 	stageDelay time.Duration
+	aiPoll     time.Duration
+	stop       chan struct{}
 }
 
 // New opens the database and prepares routes.
@@ -63,14 +66,20 @@ func New(cfg Config) (*Server, error) {
 	if cfg.FrontendOrigin == "" {
 		cfg.FrontendOrigin = "http://127.0.0.1:5173"
 	}
-	s := &Server{cfg: cfg, store: st, secret: secret, mux: http.NewServeMux(), limits: newRateLimiter(), slots: make(chan struct{}, 2)}
+	s := &Server{cfg: cfg, store: st, secret: secret, mux: http.NewServeMux(), limits: newRateLimiter(), slots: make(chan struct{}, 2),
+		aiPoll: 20 * time.Second, stop: make(chan struct{})}
+	if cfg.AIPoll > 0 {
+		s.aiPoll = cfg.AIPoll
+	}
 	s.routes()
 	s.resumeInterrupted()
+	s.watchAI()
 	return s, nil
 }
 
 // Close waits for running analyses and closes the database.
 func (s *Server) Close() error {
+	close(s.stop)
 	s.jobs.Wait()
 	return s.store.Close()
 }
