@@ -55,6 +55,7 @@ type Document struct {
 	Depth    string
 	Source   string // txt, pdf, epub or text (pasted)
 	Subgenre string
+	AIModel  string // local model requested for refinement, empty when off
 }
 
 type Note struct {
@@ -173,6 +174,7 @@ func (s *Store) migrate() error {
 		`depth VARCHAR(10) NOT NULL DEFAULT 'full'`,
 		`source VARCHAR(10) NOT NULL DEFAULT 'text'`,
 		`subgenre VARCHAR(80) NOT NULL DEFAULT ''`,
+		`ai_model VARCHAR(80) NOT NULL DEFAULT ''`,
 	}
 	for _, st := range statements {
 		if _, err := s.db.Exec(st); err != nil {
@@ -249,13 +251,13 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return err
 }
 
-const documentColumns = `id, user_id, title, author, year, genre, created_at, content, analysis, status, progress, stage, note, error, depth, source, subgenre`
+const documentColumns = `id, user_id, title, author, year, genre, created_at, content, analysis, status, progress, stage, note, error, depth, source, subgenre, ai_model`
 
 func scanDocument(row interface{ Scan(...any) error }) (*Document, error) {
 	d := &Document{}
 	var year sql.NullInt64
 	err := row.Scan(&d.ID, &d.UserID, &d.Title, &d.Author, &year, &d.Genre, &d.CreatedAt, &d.Content, &d.Analysis,
-		&d.Status, &d.Progress, &d.Stage, &d.Note, &d.Error, &d.Depth, &d.Source, &d.Subgenre)
+		&d.Status, &d.Progress, &d.Stage, &d.Note, &d.Error, &d.Depth, &d.Source, &d.Subgenre, &d.AIModel)
 	if year.Valid {
 		y := int(year.Int64)
 		d.Year = &y
@@ -264,9 +266,9 @@ func scanDocument(row interface{ Scan(...any) error }) (*Document, error) {
 }
 
 func (s *Store) CreateDocument(ctx context.Context, d *Document) error {
-	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO documents (`+documentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO documents (`+documentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		d.ID, d.UserID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, d.Content, d.Analysis,
-		d.Status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre)
+		d.Status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre, d.AIModel)
 	return err
 }
 
@@ -384,8 +386,8 @@ func (s *Store) SetProgress(ctx context.Context, id string, progress int, stage,
 }
 
 // StartAnalysis puts a document back into the processing state.
-func (s *Store) StartAnalysis(ctx context.Context, id, depth string) error {
-	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET status = 'processing', progress = 5, stage = 'extract', note = '', error = '', depth = ? WHERE id = ?`), depth, id)
+func (s *Store) StartAnalysis(ctx context.Context, id, depth, aiModel string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET status = 'processing', progress = 5, stage = 'extract', note = '', error = '', depth = ?, ai_model = ? WHERE id = ?`), depth, aiModel, id)
 	return err
 }
 

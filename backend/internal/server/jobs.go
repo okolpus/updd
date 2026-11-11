@@ -7,12 +7,13 @@ import (
 	"log"
 	"time"
 
+	"semanticatlas/backend/internal/ai"
 	"semanticatlas/backend/internal/analysis"
 	"semanticatlas/backend/internal/store"
 )
 
 // Progress (in percent) reached when a stage starts. The UI shows the same five steps.
-var stageProgress = map[string]int{"extract": 5, "entities": 20, "relations": 45, "graph": 75, "report": 90}
+var stageProgress = map[string]int{"extract": 5, "entities": 20, "relations": 45, "graph": 75, "ai": 82, "report": 90}
 
 // placeholderAnalysis is stored while a document is still being analysed.
 func placeholderAnalysis() string {
@@ -62,7 +63,21 @@ func (s *Server) runAnalysis(id string) {
 		}
 	}
 	stage("extract", fmt.Sprintf("Слов в тексте: %d", len(analysis.Word.FindAllStringIndex(doc.Content, -1))))
-	result := analysis.AnalyzeWith(doc.Content, analysis.Options{Depth: doc.Depth, Progress: stage})
+	useAI := doc.AIModel != "" && s.cfg.AI != nil
+	result := analysis.AnalyzeWith(doc.Content, analysis.Options{Depth: doc.Depth, Progress: func(name, note string) {
+		if name == "report" && useAI {
+			return // The report stage follows the model's refinement.
+		}
+		stage(name, note)
+	}})
+	if useAI {
+		stage("ai", "Qwen проверяет найденные сущности…")
+		err := ai.Refine(ctx, s.cfg.AI, &result, func(note string) { s.store.SetProgress(ctx, id, stageProgress["ai"], "ai", note) })
+		if err != nil {
+			log.Printf("analysis %s: language model: %v", id, err)
+		}
+		stage("report", "")
+	}
 	raw, err := json.Marshal(result)
 	if err != nil {
 		s.store.FailAnalysis(ctx, id, "Не удалось сохранить результат анализа.")
@@ -75,6 +90,13 @@ func (s *Server) runAnalysis(id string) {
 		}
 	}
 	note := fmt.Sprintf("Персонажей: %d · сущностей: %d · связей: %d", persons, len(result.Entities), len(result.Edges))
+	if result.AI != nil {
+		if result.AI.Error != "" {
+			note += " · Qwen не ответила, использован локальный анализ"
+		} else {
+			note += " · проверено " + result.AI.Model
+		}
+	}
 	if err := s.store.FinishAnalysis(ctx, id, string(raw), note); err != nil {
 		log.Printf("analysis %s finish: %v", id, err)
 	}

@@ -23,6 +23,8 @@ type Entity struct {
 	Description string  `json:"description"`
 	Quotes      []Quote `json:"quotes"`
 	Degree      int     `json:"degree"`
+	// ByAI marks a name and description checked by the local language model.
+	ByAI bool `json:"by_ai,omitempty"`
 }
 
 type Edge struct {
@@ -34,6 +36,9 @@ type Edge struct {
 	Weight   int      `json:"weight"`
 	Evidence []string `json:"evidence"`
 	Inferred bool     `json:"inferred"`
+	// Description and ByAI are filled when the language model labelled the link.
+	Description string `json:"description,omitempty"`
+	ByAI        bool   `json:"by_ai,omitempty"`
 }
 
 type Chapter struct {
@@ -60,6 +65,17 @@ type Result struct {
 	Keywords    []Keyword `json:"keywords"`
 	WordCount   int       `json:"word_count"`
 	Depth       string    `json:"depth,omitempty"`
+	AI          *AIInfo   `json:"ai,omitempty"`
+}
+
+// AIInfo records what the local language model changed.
+type AIInfo struct {
+	Model    string `json:"model"`
+	Entities int    `json:"entities"`
+	Merged   int    `json:"merged"`
+	Removed  int    `json:"removed"`
+	Edges    int    `json:"edges"`
+	Error    string `json:"error,omitempty"`
 }
 
 // Options control the depth of the analysis and report progress.
@@ -744,9 +760,8 @@ func contains(values []string, v string) bool {
 	return false
 }
 
-// Answer finds source sentences sharing key words with the question.
-// Queries without a lexical match return an explicit non-answer.
-func Answer(question string, result Result) (string, []Quote) {
+// Retrieve returns up to n sentences sharing key words with the question, best first.
+func Retrieve(question string, result Result, n int) []Quote {
 	query := map[string]bool{}
 	for _, w := range Word.FindAllString(question, -1) {
 		if len([]rune(w)) > 2 && !IsStop(w) {
@@ -788,9 +803,16 @@ func Answer(question string, result Result) (string, []Quote) {
 		return rows[i].shared > rows[j].shared
 	})
 	sources := []Quote{}
-	for i := 0; i < len(rows) && i < 4; i++ {
+	for i := 0; i < len(rows) && i < n; i++ {
 		sources = append(sources, rows[i].quote)
 	}
+	return sources
+}
+
+// Answer finds source sentences sharing key words with the question.
+// Queries without a lexical match return an explicit non-answer.
+func Answer(question string, result Result) (string, []Quote) {
+	sources := Retrieve(question, result, 4)
 	if len(sources) == 0 {
 		return "В тексте не найдено фрагментов с ключевыми словами вопроса. Уточните имя, место или понятие. По имеющимся данным нельзя сделать достоверный вывод.", sources
 	}
@@ -803,4 +825,40 @@ func Answer(question string, result Result) (string, []Quote) {
 		fmt.Fprintf(&b, "«%s» — %s", s.Text, s.Chapter)
 	}
 	return b.String(), sources
+}
+
+// RecomputeThemes refreshes chapter themes and entity degrees after entities changed.
+func RecomputeThemes(r *Result) {
+	byID := map[string]*Entity{}
+	for i := range r.Entities {
+		r.Entities[i].Degree = 0
+		byID[r.Entities[i].ID] = &r.Entities[i]
+	}
+	for _, e := range r.Edges {
+		if a := byID[e.Source]; a != nil {
+			a.Degree++
+		}
+		if b := byID[e.Target]; b != nil {
+			b.Degree++
+		}
+	}
+	for ci := range r.Chapters {
+		ch := &r.Chapters[ci]
+		ids := make([]string, 0, len(ch.EntityCounts))
+		for id := range ch.EntityCounts {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			if ch.EntityCounts[ids[i]] != ch.EntityCounts[ids[j]] {
+				return ch.EntityCounts[ids[i]] > ch.EntityCounts[ids[j]]
+			}
+			return ids[i] < ids[j]
+		})
+		ch.Themes = []string{}
+		for _, id := range ids {
+			if e := byID[id]; e != nil && (e.Type == "concept" || e.Type == "event") && len(ch.Themes) < 5 {
+				ch.Themes = append(ch.Themes, e.Label)
+			}
+		}
+	}
 }

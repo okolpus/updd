@@ -69,7 +69,7 @@ export default function App() {
   const [fragment, setFragment] = useState(null), [noteEntity, setNoteEntity] = useState(''), [exportBusy, setExportBusy] = useState('');
   const [mobile, setMobile] = useState(() => window.innerWidth <= 900), [narrow, setNarrow] = useState(() => window.innerWidth <= 1100);
   const [menuOpen, setMenuOpen] = useState(false), [submitting, setSubmitting] = useState(false);
-  const [dragging, setDragging] = useState(false);
+  const [dragging, setDragging] = useState(false), [aiStatus, setAiStatus] = useState(null);
   const dragDepth = useRef(0), addDropRef = useRef(null);
 
   useEffect(() => {
@@ -105,6 +105,11 @@ export default function App() {
     } catch (e) { if (sessionValid(epoch) && req === listRequest.current) setError(e.message); return []; }
   }, [query]);
   useEffect(() => { if (!user) return undefined; const t = setTimeout(loadDocuments, 250); return () => clearTimeout(t); }, [user, query, loadDocuments]);
+  // Whether the local model (Qwen via Ollama) can be used; refreshed when adding a text.
+  useEffect(() => {
+    if (!user) { setAiStatus(null); return; }
+    api('/ai').then(setAiStatus).catch(() => setAiStatus(null));
+  }, [user, view]);
   // While something is being analysed, refresh the library so cards show live progress.
   const anyProcessing = documents.some(d => d.status === 'processing');
   useEffect(() => {
@@ -152,6 +157,7 @@ export default function App() {
     const body = new FormData();
     body.append('file', file);
     for (const key of ['title', 'author', 'genre', 'subgenre', 'depth']) if (meta[key]) body.append(key, meta[key]);
+    if (meta.ai) body.append('ai', '1');
     if (meta.year) body.append('year', String(meta.year));
     return body;
   }
@@ -199,8 +205,8 @@ export default function App() {
     } catch (e) { setFailed(list => list.map(x => x.id === item.id ? { ...x, name: file.name, file, error: e.message } : x)); }
   }
 
-  async function retryAnalysis(id) {
-    try { await api(`/documents/${id}/analyze`, { method: 'POST' }); await loadDocuments(); }
+  async function retryAnalysis(id, body) {
+    try { await api(`/documents/${id}/analyze`, { method: 'POST', body }); await loadDocuments(); }
     catch (e) { setError(e.message); throw e; }
   }
 
@@ -302,7 +308,7 @@ export default function App() {
 
   const inspectorPanel = doc && inspector ? <Inspector key={doc.id} doc={doc} selectedId={selectedId} edge={edge}
     onSelect={selectEntity} onClose={() => setInspector(false)} onNote={id => { setNoteEntity(id); setTab('notes'); setFragment(null); if (narrow) setInspector(false); }}
-    questions={questions} onAsk={ask} mode={inspectorMode} setMode={setInspectorMode} /> : null;
+    questions={questions} onAsk={ask} mode={inspectorMode} setMode={setInspectorMode} ai={aiStatus?.available ? aiStatus.model : ''} /> : null;
 
   const workspace = docBusy || !doc ? <Busy text="Загрузка текста и результатов анализа…" /> : <div className="screen doc-screen">
     <div className="document-heading">
@@ -367,8 +373,9 @@ export default function App() {
           onAdd={() => navigate('add')} onOpen={d => openDoc(d.id)} onFiles={uploadFiles}
           onDelete={d => { setTarget(d); setModal('delete'); }} onEdit={d => { setTarget(d); setModal('meta'); }}
           onRetry={async d => { try { await retryAnalysis(d.id); showProgress(d); } catch { /* error shown */ } }}
+          onRefine={aiStatus?.available ? async d => { try { await retryAnalysis(d.id, { ai: true }); showProgress(d); } catch { /* error shown */ } } : null}
           onReplaceFailed={replaceFailed} onDismissFailed={id => setFailed(list => list.filter(x => x.id !== id))} />}
-        {view === 'add' && <AddTextScreen onSubmit={submitAdd} onCancel={() => navigate('library')} busy={submitting} registerDrop={registerAddDrop} />}
+        {view === 'add' && <AddTextScreen onSubmit={submitAdd} onCancel={() => navigate('library')} busy={submitting} registerDrop={registerAddDrop} ai={aiStatus} />}
         {view === 'progress' && progressId && <ProgressScreen key={progressId} id={progressId}
           onDone={id => { loadDocuments(); openDoc(id); }} onBack={() => navigate('library')} onRetry={retryAnalysis} />}
         {view === 'document' && workspace}

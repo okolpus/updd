@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"semanticatlas/backend/internal/llm"
 	"semanticatlas/backend/internal/server"
 	"semanticatlas/frontend"
 )
@@ -33,6 +34,11 @@ func main() {
 	if *frontendDir != "" {
 		ui = os.DirFS(*frontendDir)
 	}
+	var aiClient *llm.Client
+	if !strings.EqualFold(os.Getenv("ATLAS_AI"), "off") {
+		aiClient = llm.New(os.Getenv("OLLAMA_URL"), os.Getenv("OLLAMA_MODEL"))
+		log.Printf("Нейросеть: %s через Ollama (%s), если она запущена", aiClient.Model, aiClient.URL)
+	}
 	srv, err := server.New(server.Config{
 		DataDir:        env("DATA_DIR", "backend/data"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
@@ -40,6 +46,7 @@ func main() {
 		CookieSecure:   strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"),
 		FrontendOrigin: os.Getenv("FRONTEND_ORIGIN"),
 		Frontend:       ui,
+		AI:             aiClient,
 	})
 	if err != nil {
 		log.Fatalf("Не удалось запустить сервер: %v", err)

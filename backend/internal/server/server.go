@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"semanticatlas/backend/internal/llm"
 	"semanticatlas/backend/internal/store"
 )
 
@@ -30,7 +31,8 @@ type Config struct {
 	SecretKey      string
 	CookieSecure   bool
 	FrontendOrigin string
-	Frontend       fs.FS // built UI (index.html, assets/); nil disables the UI
+	Frontend       fs.FS       // built UI (index.html, assets/); nil disables the UI
+	AI             *llm.Client // local language model (Ollama); nil disables it
 }
 
 type Server struct {
@@ -107,6 +109,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/auth/login", s.login)
 	m.HandleFunc("POST /api/auth/demo", s.demo)
 	m.HandleFunc("GET /api/auth/me", s.authed(s.me))
+	m.HandleFunc("GET /api/ai", s.authed(func(w http.ResponseWriter, r *http.Request, _ *store.User) {
+		writeJSON(w, http.StatusOK, s.cfg.AI.Status(r.Context()))
+	}))
 	m.HandleFunc("POST /api/auth/logout", s.logout)
 	m.HandleFunc("PATCH /api/profile", s.authed(s.updateProfile))
 	m.HandleFunc("GET /api/documents", s.authed(s.listDocuments))

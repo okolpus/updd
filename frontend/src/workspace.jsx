@@ -222,6 +222,8 @@ export function MethodModal({ onClose, analysis }) {
       <Paragraph>Локальный анализ на сервере сводит формы слов по окончаниям русского языка, учитывает частотность и контекст (предлоги, заглавные буквы, слова-маркеры) и по этим правилам распознаёт имена, места и события. Совместные упоминания образуют связи. Типизированные связи — предположения по языковым признакам.</Paragraph>
       <Title level={5}>Вопросы по тексту</Title>
       <Paragraph>Система находит подходящие фрагменты и сущности графа. Ответы опираются на источник без генеративной модели и не дополняют содержание произведения.</Paragraph>
+      <Title level={5}>Нейросеть Qwen (необязательно)</Title>
+      <Paragraph>Если на компьютере запущена Ollama с моделью Qwen, при добавлении текста можно включить «Уточнить с помощью Qwen». Модель получает только найденные сущности и предложения-доказательства: исправляет названия и типы, объединяет дубли, убирает мусор и подписывает связи. Вопросы к тексту тогда получают короткий ответ с номерами цитат. Всё работает локально, текст никуда не отправляется. Нейросеть тоже ошибается, поэтому подписи помечены и сопровождаются цитатами.</Paragraph>
       <Title level={5}>Ограничения</Title>
       <Paragraph>{analysis?.limitations || 'Имена могут объединяться или разделяться ошибочно. Значения терминов, мотивы персонажей и причинные связи требуют проверки. Граф показывает наиболее значимые сущности текста.'}</Paragraph>
       <Title level={5}>Файлы и хранение</Title>
@@ -251,6 +253,9 @@ export function Analytics({ doc, onEntity }) {
       { key: 'edges', label: 'Связи', children: a.edges.length },
       { key: 'chapters', label: 'Главы и блоки', children: a.chapters.length },
     ]} />
+    {a.ai && <Alert className="ai-summary" type={a.ai.error ? 'warning' : 'info'} showIcon title={a.ai.error
+      ? `Нейросеть ${a.ai.model} не ответила: ${a.ai.error}. Показан локальный анализ.`
+      : `Проверено нейросетью ${a.ai.model}: уточнено сущностей ${a.ai.entities}, объединено дублей ${a.ai.merged}, убрано лишних ${a.ai.removed}, подписано связей ${a.ai.edges}.`} />}
     <Title level={5}>Сущности и частота упоминаний</Title>
     <Table size="small" columns={columns} dataSource={a.entities} rowKey="id"
       pagination={{ pageSize: 10, showSizeChanger: false, hideOnSinglePage: true }} scroll={{ x: 470 }} />
@@ -331,7 +336,7 @@ function NoteItem({ note, entities, onDelete }) {
     <ErrorBox error={error} />
   </article>;
 }
-export function Questions({ questions, onAsk }) {
+export function Questions({ questions, onAsk, ai }) {
   const [question, setQuestion] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const bottom = useRef();
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }); }, [questions.length]);
@@ -342,12 +347,12 @@ export function Questions({ questions, onAsk }) {
     catch (e) { setError(e.message); } finally { setBusy(false); }
   }
   return <div className="questions-panel">
-    <Text type="secondary" className="qa-description">Поиск по содержанию текста с цитатами. Без генерации дополнительных фактов.</Text>
+    <Text type="secondary" className="qa-description">{ai ? `Отвечает ${ai} на вашем компьютере, только по найденным цитатам; номера в скобках — ссылки на фрагменты.` : 'Поиск по содержанию текста с цитатами. Без генерации дополнительных фактов.'}</Text>
     <div className="qa-history">
       {!questions.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="История вопросов пуста" />}
       {questions.map(q => <article className="qa-message" key={q.id}>
-        <Text strong>{q.question}</Text><Paragraph className="qa-answer">{q.answer}</Paragraph>
-        {q.sources?.map((s, i) => <details className="qa-source" key={i}><summary>{s.chapter || 'Фрагмент текста'}</summary><blockquote>{s.text}</blockquote></details>)}
+        <Text strong>{q.question}</Text>{q.mode?.startsWith('ai:') && <Tag color="purple" className="qa-mode">{q.mode.slice(3)}</Tag>}<Paragraph className="qa-answer">{q.answer}</Paragraph>
+        {q.sources?.map((s, i) => <details className="qa-source" key={i}><summary>[{i + 1}] {s.chapter || 'Фрагмент текста'}</summary><blockquote>{s.text}</blockquote></details>)}
       </article>)}<div ref={bottom} />
     </div>
     <div className="qa-form"><TextArea aria-label="Вопрос по тексту" value={question} onChange={e => setQuestion(e.target.value)}
@@ -357,7 +362,7 @@ export function Questions({ questions, onAsk }) {
     </div>
   </div>;
 }
-export function Inspector({ doc, selectedId, edge, onSelect, onClose, onNote, questions, onAsk, mode, setMode }) {
+export function Inspector({ doc, selectedId, edge, onSelect, onClose, onNote, questions, onAsk, mode, setMode, ai }) {
   const { entities, edges } = doc.analysis;
   const selected = entities.find(n => n.id === selectedId);
   const related = selected ? edges.filter(e => e.source === selected.id || e.target === selected.id) : [];
@@ -365,15 +370,15 @@ export function Inspector({ doc, selectedId, edge, onSelect, onClose, onNote, qu
     <div className="inspector-heading"><Tabs activeKey={mode} onChange={setMode} size="small" items={[
       { key: 'entity', label: 'Сущность' }, { key: 'questions', label: `Вопросы${questions.length ? ` (${questions.length})` : ''}` },
     ]} /><IconButton label="Закрыть панель" onClick={onClose}>{icon(X)}</IconButton></div>
-    {mode === 'questions' ? <Questions questions={questions} onAsk={onAsk} /> : edge ? <div className="inspector-body">
+    {mode === 'questions' ? <Questions questions={questions} onAsk={onAsk} ai={ai} /> : edge ? <div className="inspector-body">
       <Text type="secondary">Предполагаемая связь</Text>
       <Title level={4}>{entities.find(n => n.id === edge.source)?.label} → {entities.find(n => n.id === edge.target)?.label}</Title>
-      <Tag>{edge.label}</Tag><Paragraph type="secondary">Тип определён автоматически и требует проверки.</Paragraph>
+      <Space size={6} wrap><Tag>{edge.label}</Tag>{edge.by_ai && <Tag color="purple">Qwen</Tag>}</Space>{edge.description && <Paragraph className="ai-description">{edge.description}</Paragraph>}<Paragraph type="secondary">{edge.by_ai ? 'Подпись предложена локальной нейросетью Qwen по цитатам ниже. Проверьте её.' : 'Тип определён автоматически и требует проверки.'}</Paragraph>
       <Title level={5}>Подтверждение в тексте</Title>
       {edge.evidence?.map((q, i) => <blockquote className="source-quote" key={i}>{typeof q === 'string' ? q : q.text}</blockquote>)}
       <Button block onClick={() => onSelect(edge.source)}>Открыть сущность</Button>
     </div> : selected ? <div className="inspector-body">
-      <EntityTag type={selected.type} /><Title level={4}>{selected.label}</Title>
+      <Space size={6}><EntityTag type={selected.type} />{selected.by_ai && <Tag color="purple">Проверено Qwen</Tag>}</Space><Title level={4}>{selected.label}</Title>
       <Paragraph type="secondary">{selected.description}</Paragraph>
       <Descriptions size="small" column={2} items={[
         { key: 'count', label: 'Упоминания', children: num(selected.count) },

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"semanticatlas/backend/internal/ai"
 	"semanticatlas/backend/internal/analysis"
 	"semanticatlas/backend/internal/export"
 	"semanticatlas/backend/internal/parsing"
@@ -35,6 +36,7 @@ type summary struct {
 	Depth       string `json:"depth"`
 	Source      string `json:"source"`
 	Subgenre    string `json:"subgenre"`
+	AIModel     string `json:"ai_model"`
 }
 
 type fullDocument struct {
@@ -58,7 +60,7 @@ func summarize(d *store.Document) summary {
 		status = "ready"
 	}
 	return summary{d.ID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, c.WordCount, len(c.Entities), len(c.Edges),
-		status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre}
+		status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre, d.AIModel}
 }
 
 func full(d *store.Document) fullDocument {
@@ -121,6 +123,7 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request, user *sto
 type docInput struct {
 	title, author, genre, content string
 	subgenre, depth, source       string
+	ai                            bool
 	year                          *int
 }
 
@@ -173,10 +176,15 @@ func (s *Server) finishCreate(w http.ResponseWriter, r *http.Request, user *stor
 	if in.source == "" {
 		in.source = "text"
 	}
+	aiModel, msg := s.aiModel(r, in.ai)
+	if msg != "" {
+		fail(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
 	// The text is stored right away; entities and links are computed in the background.
 	doc := &store.Document{ID: uid(), UserID: user.ID, Title: in.title, Author: in.author, Year: in.year, Genre: in.genre,
 		CreatedAt: store.Now(), Content: content, Analysis: placeholderAnalysis(), Status: "processing", Progress: stageProgress["extract"],
-		Stage: "extract", Depth: normalizeDepth(in.depth), Source: in.source, Subgenre: in.subgenre}
+		Stage: "extract", Depth: normalizeDepth(in.depth), Source: in.source, Subgenre: in.subgenre, AIModel: aiModel}
 	if err := s.store.CreateDocument(r.Context(), doc); err != nil {
 		serverError(w, err)
 		return
@@ -212,6 +220,11 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request, user *st
 	in.subgenre, _, okSub = field(body, "subgenre")
 	in.depth, _, okDepth = field(body, "depth")
 	okGenre = okGenre && okSub && okDepth
+	if raw, ok := body["ai"]; ok && string(raw) != "null" {
+		if json.Unmarshal(raw, &in.ai) != nil {
+			okGenre = false
+		}
+	}
 	in.year, okYear = intField(body, "year")
 	if !okTitle || !okAuthor || !okGenre || !okContent || !okYear {
 		fail(w, http.StatusUnprocessableEntity, "Проверьте поля формы.")
@@ -256,7 +269,7 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request, user *st
 		return
 	}
 	in := docInput{title: r.FormValue("title"), author: r.FormValue("author"), genre: r.FormValue("genre"), content: content,
-		subgenre: r.FormValue("subgenre"), depth: r.FormValue("depth"), source: strings.TrimPrefix(strings.ToLower(path.Ext(header.Filename)), ".")}
+		subgenre: r.FormValue("subgenre"), depth: r.FormValue("depth"), ai: truthy(r.FormValue("ai")), source: strings.TrimPrefix(strings.ToLower(path.Ext(header.Filename)), ".")}
 	if strings.TrimSpace(in.title) == "" {
 		name := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
 		in.title = strings.TrimSuffix(name, path.Ext(name))
@@ -358,7 +371,7 @@ func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, user *store.U
 		fail(w, http.StatusConflict, "Анализ уже выполняется.")
 		return
 	}
-	depth := doc.Depth
+	depth, useAI := doc.Depth, doc.AIModel != ""
 	if r.ContentLength > 0 {
 		body, ok := decode(w, r)
 		if !ok {
@@ -367,14 +380,22 @@ func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, user *store.U
 		if value, present, ok := field(body, "depth"); present && ok && value != "" {
 			depth = value
 		}
+		if raw, ok := body["ai"]; ok {
+			json.Unmarshal(raw, &useAI)
+		}
 	}
 	depth = normalizeDepth(depth)
-	if err := s.store.StartAnalysis(r.Context(), doc.ID, depth); err != nil {
+	aiModel, msg := s.aiModel(r, useAI)
+	if msg != "" {
+		fail(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	if err := s.store.StartAnalysis(r.Context(), doc.ID, depth, aiModel); err != nil {
 		serverError(w, err)
 		return
 	}
 	s.enqueue(doc.ID)
-	doc.Status, doc.Progress, doc.Stage, doc.Note, doc.Error, doc.Depth = "processing", stageProgress["extract"], "extract", "", "", depth
+	doc.Status, doc.Progress, doc.Stage, doc.Note, doc.Error, doc.Depth, doc.AIModel = "processing", stageProgress["extract"], "extract", "", "", depth, aiModel
 	writeJSON(w, http.StatusAccepted, summarize(doc))
 }
 
@@ -522,8 +543,17 @@ func (s *Server) createQuestion(w http.ResponseWriter, r *http.Request, user *st
 		return
 	}
 	answer, sources := analysis.Answer(question, a)
+	mode := "extractive"
+	if st := s.cfg.AI.Status(r.Context()); st.Available {
+		generated, quotes, err := ai.Answer(r.Context(), s.cfg.AI, question, a)
+		if err == nil && generated != "" {
+			answer, sources, mode = generated, quotes, "ai:"+st.Model
+		} else if err != nil {
+			answer = "Qwen не ответила, поэтому показаны найденные фрагменты.\n\n" + answer
+		}
+	}
 	raw, _ := json.Marshal(sources)
-	q := &store.Question{ID: uid(), DocumentID: doc.ID, Question: question, Answer: answer, Sources: string(raw), Mode: "extractive", CreatedAt: store.Now()}
+	q := &store.Question{ID: uid(), DocumentID: doc.ID, Question: question, Answer: answer, Sources: string(raw), Mode: mode, CreatedAt: store.Now()}
 	if err := s.store.CreateQuestion(r.Context(), q); err != nil {
 		serverError(w, err)
 		return
@@ -572,4 +602,21 @@ func (s *Server) exportPNG(w http.ResponseWriter, r *http.Request, user *store.U
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Disposition", `attachment; filename="semantic-atlas-graph.png"`)
 	w.Write(data)
+}
+
+func truthy(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "1" || v == "true" || v == "on" || v == "yes"
+}
+
+// aiModel returns the model to use when refinement was requested, or a message why it cannot be used.
+func (s *Server) aiModel(r *http.Request, requested bool) (string, string) {
+	if !requested {
+		return "", ""
+	}
+	st := s.cfg.AI.Status(r.Context())
+	if !st.Available {
+		return "", "Qwen сейчас недоступна. " + st.Reason
+	}
+	return st.Model, ""
 }

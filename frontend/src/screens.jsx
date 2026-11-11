@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AutoComplete, Button, Dropdown, Input, InputNumber, Tooltip } from 'antd';
+import { AutoComplete, Button, Dropdown, Input, InputNumber, Switch, Tooltip } from 'antd';
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Calendar, Check, CheckCircle2, ChevronDown, ClipboardPaste,
   Clock, Cog, FileText, FlaskConical, GraduationCap, Loader2, MoreVertical, Network, Plus, RotateCcw,
-  Tag, Trash2, Upload as UploadIcon, User, Users, X, Zap, BarChart3,
+  Tag, Trash2, Upload as UploadIcon, User, Users, X, Zap, BarChart3, Sparkles,
 } from 'lucide-react';
 import { api } from './workspace.jsx';
 import { fileProblem } from './files.js';
@@ -28,6 +28,7 @@ const PERIODS = [
   { key: '365', label: 'За год', days: 365 },
 ];
 
+export const AI_STAGE = { key: 'ai', label: 'Проверка Qwen', hint: 'Нейросеть Qwen проверяет сущности и подписывает связи…', Icon: Sparkles };
 export const STAGES = [
   { key: 'extract', label: 'Извлечение текста', hint: 'Извлекаем текст и считаем слова…', Icon: FileText },
   { key: 'entities', label: 'Выделение сущностей', hint: 'Ищем персонажей, места и события…', Icon: Users },
@@ -35,8 +36,8 @@ export const STAGES = [
   { key: 'graph', label: 'Построение графа', hint: 'Строим граф связей…', Icon: Network },
   { key: 'report', label: 'Генерация отчёта', hint: 'Готовим аналитику по главам…', Icon: BarChart3 },
 ];
-const STAGE_PROGRESS = { extract: 5, entities: 20, relations: 45, graph: 75, report: 90, done: 100 };
-const stageIndex = stage => stage === 'done' ? STAGES.length : Math.max(0, STAGES.findIndex(s => s.key === stage));
+const STAGE_PROGRESS = { extract: 5, entities: 20, relations: 45, graph: 75, ai: 82, report: 90, done: 100 };
+const stagesFor = status => status?.ai_model ? [...STAGES.slice(0, 4), AI_STAGE, STAGES[4]] : STAGES;
 
 function FileTile({ genre, source }) {
   const { tone, Icon } = kindOf(genre);
@@ -59,16 +60,17 @@ function FilterButton({ icon: Icon, label, value, options, onChange }) {
   </Dropdown>;
 }
 
-function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry }) {
+function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry, onRefine }) {
   const processing = doc.status === 'processing', failed = doc.status === 'error';
   const menu = [
     { key: 'open', label: 'Открыть', disabled: failed },
     { key: 'edit', label: 'Изменить сведения' },
     { key: 'retry', label: 'Проанализировать заново', disabled: processing },
+    ...(onRefine && !doc.ai_model ? [{ key: 'refine', label: 'Уточнить с помощью Qwen', disabled: processing }] : []),
     { type: 'divider' },
     { key: 'delete', label: 'Удалить', danger: true },
   ];
-  const act = ({ key }) => ({ open: onOpen, edit: onEdit, retry: onRetry, delete: onDelete })[key]?.();
+  const act = ({ key }) => ({ open: onOpen, edit: onEdit, retry: onRetry, refine: onRefine, delete: onDelete })[key]?.();
   return <article className={`doc-card ${processing ? 'is-processing' : ''}`}>
     <div className="doc-card-top">
       <FileTile genre={doc.genre} source={doc.source} />
@@ -76,6 +78,7 @@ function DocumentCard({ doc, onOpen, onDelete, onEdit, onRetry }) {
         <div className="doc-card-tags">
           <span className={`sq-tag tone-${kindOf(doc.genre).tone}`}>{doc.genre || 'Текст'}</span>
           <StatusTag status={doc.status} />
+          {doc.ai_model && <span className="sq-tag tone-purple"><Sparkles size={11} />Qwen</span>}
         </div>
         <h3><button type="button" onClick={failed ? onRetry : onOpen}>{doc.title}</button></h3>
         <p>{doc.author || 'Автор не указан'}{doc.subgenre ? ` · ${doc.subgenre}` : ''}</p>
@@ -128,7 +131,7 @@ function FailedUploadCard({ item, onReplace, onDismiss }) {
   </article>;
 }
 
-export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, onOpen, onDelete, onEdit, onRetry, onReplaceFailed, onDismissFailed, onFiles, query }) {
+export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, onOpen, onDelete, onEdit, onRetry, onRefine, onReplaceFailed, onDismissFailed, onFiles, query }) {
   const authors = useMemo(() => [...new Set(documents.map(d => d.author).filter(Boolean))].sort(), [documents]);
   const subgenres = useMemo(() => [...new Set(documents.map(d => d.subgenre).filter(Boolean))].sort(), [documents]);
   const kinds = useMemo(() => [...new Set(documents.map(d => d.genre).filter(Boolean))], [documents]);
@@ -157,7 +160,7 @@ export function LibraryScreen({ documents, failed, filters, setFilters, onAdd, o
     </div>}
     {!documents.length && !failed.length ? <EmptyLibrary onFiles={onFiles} onAdd={onAdd} query={query} /> : <div className="card-grid">
       {failed.map(item => <FailedUploadCard key={item.id} item={item} onReplace={f => onReplaceFailed(item, f)} onDismiss={() => onDismissFailed(item.id)} />)}
-      {shown.map(d => <DocumentCard key={d.id} doc={d} onOpen={() => onOpen(d)} onDelete={() => onDelete(d)} onEdit={() => onEdit(d)} onRetry={() => onRetry(d)} />)}
+      {shown.map(d => <DocumentCard key={d.id} doc={d} onOpen={() => onOpen(d)} onDelete={() => onDelete(d)} onEdit={() => onEdit(d)} onRetry={() => onRetry(d)} onRefine={onRefine ? () => onRefine(d) : null} />)}
       {!shown.length && !failed.length && <div className="grid-empty">Под выбранные фильтры ничего не подходит. <button type="button" className="link-button" onClick={() => setFilters({})}>Сбросить фильтры</button></div>}
     </div>}
   </div>;
@@ -200,9 +203,9 @@ const DRAFT_KEY = 'semantiq-draft';
 const readDraft = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY)) || {}; } catch { return {}; } };
 const SUBGENRES = ['Роман', 'Повесть', 'Рассказ', 'Пьеса', 'Поэзия', 'Учебник', 'Статья', 'Монография'].map(value => ({ value }));
 
-export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop }) {
+export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop, ai }) {
   const draft = useMemo(readDraft, []);
-  const [meta, setMeta] = useState({ title: '', author: '', year: null, subgenre: '', genre: 'Художественный', depth: 'full', ...draft.meta });
+  const [meta, setMeta] = useState({ title: '', author: '', year: null, subgenre: '', genre: 'Художественный', depth: 'full', ...draft.meta, ai: false });
   const [text, setText] = useState(draft.text || '');
   const [file, setFile] = useState(null);
   const [error, setError] = useState('');
@@ -261,6 +264,15 @@ export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop }) {
             <button type="button" key={value} className={`depth-option ${meta.depth === value ? 'checked' : ''}`} onClick={() => set('depth', value)} aria-pressed={meta.depth === value}>
               <strong>{title}</strong><span>{hint}</span>
             </button>)}
+          <div className={`ai-toggle ${ai?.available ? '' : 'disabled'}`}>
+            <div className="ai-toggle-head">
+              <span className="ai-icon"><Sparkles size={16} /></span>
+              <strong>Уточнить с помощью Qwen</strong>
+              <Switch size="small" checked={!!meta.ai && !!ai?.available} disabled={!ai?.available} onChange={v => set('ai', v)} aria-label="Уточнить с помощью Qwen" />
+            </div>
+            <span>{ai?.available ? `Локальная нейросеть ${ai.model} проверит сущности, объединит дубли и подпишет связи. Займёт больше времени.`
+              : ai?.reason || 'Нейросеть не подключена.'}</span>
+          </div>
         </section>
       </div>
       <div className="add-main">
@@ -307,6 +319,8 @@ export function ProgressScreen({ id, onDone, onBack, onRetry, onStatus }) {
     poll();
     return () => { alive = false; clearTimeout(timer); };
   }, [id, round]);
+  const steps = stagesFor(status);
+  const stageIndex = stage => stage === 'done' ? steps.length : Math.max(0, steps.findIndex(s => s.key === stage));
   const actual = status ? stageIndex(status.status === 'ready' ? 'done' : status.stage) : 0;
   // Steps advance one at a time so short analyses still show every real stage.
   useEffect(() => {
@@ -315,7 +329,7 @@ export function ProgressScreen({ id, onDone, onBack, onRetry, onStatus }) {
     return () => clearTimeout(t);
   }, [shown, actual]);
   useEffect(() => {
-    if (status?.status === 'ready' && shown >= STAGES.length && !doneCalled.current) {
+    if (status?.status === 'ready' && shown >= steps.length && !doneCalled.current) {
       doneCalled.current = true;
       const t = setTimeout(() => onDone(id), 650);
       return () => clearTimeout(t);
@@ -323,13 +337,13 @@ export function ProgressScreen({ id, onDone, onBack, onRetry, onStatus }) {
     return undefined;
   }, [status, shown, id, onDone]);
   const failed = status?.status === 'error';
-  const percent = shown >= STAGES.length ? 100 : STAGE_PROGRESS[STAGES[shown].key];
-  const hint = failed ? (status.error || 'Не удалось проанализировать текст.') : shown >= STAGES.length ? 'Анализ завершён. Открываем граф…' : STAGES[shown].hint;
+  const percent = shown >= steps.length ? 100 : STAGE_PROGRESS[steps[shown].key];
+  const hint = failed ? (status.error || 'Не удалось проанализировать текст.') : shown >= steps.length ? 'Анализ завершён. Открываем граф…' : steps[shown].hint;
   return <div className="screen progress-screen">
     <section className="sq-card progress-card">
       <div className={`progress-icon ${failed ? 'failed' : ''}`}>
         {failed ? <AlertTriangle size={34} /> : <Network size={34} />}
-        <span className="progress-icon-badge">{failed ? <X size={12} /> : <Cog size={12} className={shown < STAGES.length ? 'spin-slow' : ''} />}</span>
+        <span className="progress-icon-badge">{failed ? <X size={12} /> : <Cog size={12} className={shown < steps.length ? 'spin-slow' : ''} />}</span>
       </div>
       <h1>{failed ? 'Анализ не удался' : 'Обработка семантики'}</h1>
       <p className="progress-hint" aria-live="polite">{hint}</p>
@@ -338,8 +352,8 @@ export function ProgressScreen({ id, onDone, onBack, onRetry, onStatus }) {
         <div className="progress-meter-head"><span>Прогресс анализа</span><strong>{percent}%</strong></div>
         <div className={`meter ${failed ? 'failed' : ''}`}><span style={{ width: `${percent}%` }} /></div>
       </div>
-      <ol className="steps">
-        {STAGES.map((s, i) => {
+      <ol className="steps" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
+        {steps.map((s, i) => {
           const state = failed && i === shown ? 'failed' : i < shown ? 'done' : i === shown ? 'active' : 'pending';
           return <li key={s.key} className={`step ${state}`}>
             <span className="step-dot">{state === 'done' ? <Check size={16} /> : state === 'active' ? <Loader2 size={16} className="spin" /> : state === 'failed' ? <X size={16} /> : <s.Icon size={15} />}</span>
