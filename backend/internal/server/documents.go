@@ -28,6 +28,13 @@ type summary struct {
 	EntityCount int    `json:"entity_count"`
 	EdgeCount   int    `json:"edge_count"`
 	Status      string `json:"status"`
+	Progress    int    `json:"progress"`
+	Stage       string `json:"stage"`
+	Note        string `json:"note"`
+	Error       string `json:"error"`
+	Depth       string `json:"depth"`
+	Source      string `json:"source"`
+	Subgenre    string `json:"subgenre"`
 }
 
 type fullDocument struct {
@@ -46,7 +53,12 @@ type counts struct {
 func summarize(d *store.Document) summary {
 	var c counts
 	json.Unmarshal([]byte(d.Analysis), &c)
-	return summary{d.ID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, c.WordCount, len(c.Entities), len(c.Edges), "ready"}
+	status := d.Status
+	if status == "" {
+		status = "ready"
+	}
+	return summary{d.ID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, c.WordCount, len(c.Entities), len(c.Edges),
+		status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre}
 }
 
 func full(d *store.Document) fullDocument {
@@ -108,6 +120,7 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request, user *sto
 
 type docInput struct {
 	title, author, genre, content string
+	subgenre, depth, source       string
 	year                          *int
 }
 
@@ -115,6 +128,7 @@ func validateMeta(in *docInput) string {
 	in.title = strings.TrimSpace(in.title)
 	in.author = strings.TrimSpace(in.author)
 	in.genre = strings.TrimSpace(in.genre)
+	in.subgenre = strings.TrimSpace(in.subgenre)
 	if in.genre == "" {
 		in.genre = "Художественный"
 	}
@@ -127,19 +141,22 @@ func validateMeta(in *docInput) string {
 		return "Автор не длиннее 180 символов."
 	case runeLen(in.genre) > 80:
 		return "Тип текста не длиннее 80 символов."
+	case runeLen(in.subgenre) > 80:
+		return "Жанр не длиннее 80 символов."
 	case in.year != nil && (*in.year < 1 || *in.year > 2200):
 		return "Год должен быть от 1 до 2200."
 	}
 	return ""
 }
 
+// saveDocument analyses synchronously; used for the demo story.
 func (s *Server) saveDocument(ctx context.Context, user *store.User, title, author string, year *int, genre, content string) (*store.Document, error) {
 	_, raw, err := analyzeJSON(content)
 	if err != nil {
 		return nil, err
 	}
 	doc := &store.Document{ID: uid(), UserID: user.ID, Title: title, Author: author, Year: year, Genre: genre,
-		CreatedAt: store.Now(), Content: content, Analysis: raw}
+		CreatedAt: store.Now(), Content: content, Analysis: raw, Status: "ready", Progress: 100, Stage: "done", Depth: "full", Source: "text"}
 	return doc, s.store.CreateDocument(ctx, doc)
 }
 
@@ -153,11 +170,18 @@ func (s *Server) finishCreate(w http.ResponseWriter, r *http.Request, user *stor
 		fail(w, http.StatusUnprocessableEntity, parsing.Describe(err))
 		return
 	}
-	doc, err := s.saveDocument(r.Context(), user, in.title, in.author, in.year, in.genre, content)
-	if err != nil {
+	if in.source == "" {
+		in.source = "text"
+	}
+	// The text is stored right away; entities and links are computed in the background.
+	doc := &store.Document{ID: uid(), UserID: user.ID, Title: in.title, Author: in.author, Year: in.year, Genre: in.genre,
+		CreatedAt: store.Now(), Content: content, Analysis: placeholderAnalysis(), Status: "processing", Progress: stageProgress["extract"],
+		Stage: "extract", Depth: normalizeDepth(in.depth), Source: in.source, Subgenre: in.subgenre}
+	if err := s.store.CreateDocument(r.Context(), doc); err != nil {
 		serverError(w, err)
 		return
 	}
+	s.enqueue(doc.ID)
 	writeJSON(w, http.StatusCreated, full(doc))
 }
 
@@ -184,6 +208,10 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request, user *st
 	in.author, _, okAuthor = field(body, "author")
 	in.genre, _, okGenre = field(body, "genre")
 	in.content, _, okContent = field(body, "content")
+	var okSub, okDepth bool
+	in.subgenre, _, okSub = field(body, "subgenre")
+	in.depth, _, okDepth = field(body, "depth")
+	okGenre = okGenre && okSub && okDepth
 	in.year, okYear = intField(body, "year")
 	if !okTitle || !okAuthor || !okGenre || !okContent || !okYear {
 		fail(w, http.StatusUnprocessableEntity, "Проверьте поля формы.")
@@ -227,7 +255,8 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request, user *st
 		fail(w, http.StatusUnprocessableEntity, parsing.Describe(err))
 		return
 	}
-	in := docInput{title: r.FormValue("title"), author: r.FormValue("author"), genre: r.FormValue("genre"), content: content}
+	in := docInput{title: r.FormValue("title"), author: r.FormValue("author"), genre: r.FormValue("genre"), content: content,
+		subgenre: r.FormValue("subgenre"), depth: r.FormValue("depth"), source: strings.TrimPrefix(strings.ToLower(path.Ext(header.Filename)), ".")}
 	if strings.TrimSpace(in.title) == "" {
 		name := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
 		in.title = strings.TrimSuffix(name, path.Ext(name))
@@ -261,7 +290,7 @@ func (s *Server) patchDocument(w http.ResponseWriter, r *http.Request, user *sto
 	if !ok {
 		return
 	}
-	for _, key := range []string{"title", "author", "genre"} {
+	for _, key := range []string{"title", "author", "genre", "subgenre"} {
 		raw, present := body[key]
 		if !present {
 			continue
@@ -278,6 +307,8 @@ func (s *Server) patchDocument(w http.ResponseWriter, r *http.Request, user *sto
 			doc.Author = value
 		case "genre":
 			doc.Genre = value
+		case "subgenre":
+			doc.Subgenre = value
 		}
 	}
 	if _, present := body["year"]; present {
@@ -288,17 +319,63 @@ func (s *Server) patchDocument(w http.ResponseWriter, r *http.Request, user *sto
 		}
 		doc.Year = year
 	}
-	in := docInput{title: doc.Title, author: doc.Author, genre: doc.Genre, year: doc.Year}
+	in := docInput{title: doc.Title, author: doc.Author, genre: doc.Genre, subgenre: doc.Subgenre, year: doc.Year}
 	if msg := validateMeta(&in); msg != "" {
 		fail(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
-	doc.Title, doc.Author, doc.Genre = in.title, in.author, in.genre
+	doc.Title, doc.Author, doc.Genre, doc.Subgenre = in.title, in.author, in.genre, in.subgenre
 	if err := s.store.UpdateDocument(r.Context(), doc); err != nil {
 		serverError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, full(doc))
+}
+
+// readyDoc is owned() plus a check that the analysis has finished.
+func (s *Server) readyDoc(w http.ResponseWriter, r *http.Request, user *store.User) *store.Document {
+	doc := s.owned(w, r, user)
+	if doc != nil && !ready(doc) {
+		fail(w, http.StatusConflict, "Анализ текста ещё не завершён.")
+		return nil
+	}
+	return doc
+}
+
+// documentStatus returns only the summary, for polling analysis progress.
+func (s *Server) documentStatus(w http.ResponseWriter, r *http.Request, user *store.User) {
+	if doc := s.owned(w, r, user); doc != nil {
+		writeJSON(w, http.StatusOK, summarize(doc))
+	}
+}
+
+func (s *Server) reanalyze(w http.ResponseWriter, r *http.Request, user *store.User) {
+	doc := s.owned(w, r, user)
+	if doc == nil {
+		return
+	}
+	if doc.Status == "processing" {
+		fail(w, http.StatusConflict, "Анализ уже выполняется.")
+		return
+	}
+	depth := doc.Depth
+	if r.ContentLength > 0 {
+		body, ok := decode(w, r)
+		if !ok {
+			return
+		}
+		if value, present, ok := field(body, "depth"); present && ok && value != "" {
+			depth = value
+		}
+	}
+	depth = normalizeDepth(depth)
+	if err := s.store.StartAnalysis(r.Context(), doc.ID, depth); err != nil {
+		serverError(w, err)
+		return
+	}
+	s.enqueue(doc.ID)
+	doc.Status, doc.Progress, doc.Stage, doc.Note, doc.Error, doc.Depth = "processing", stageProgress["extract"], "extract", "", "", depth
+	writeJSON(w, http.StatusAccepted, summarize(doc))
 }
 
 func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request, user *store.User) {
@@ -327,7 +404,7 @@ func (s *Server) listNotes(w http.ResponseWriter, r *http.Request, user *store.U
 }
 
 func (s *Server) createNote(w http.ResponseWriter, r *http.Request, user *store.User) {
-	doc := s.owned(w, r, user)
+	doc := s.readyDoc(w, r, user)
 	if doc == nil {
 		return
 	}
@@ -425,7 +502,7 @@ func (s *Server) listQuestions(w http.ResponseWriter, r *http.Request, user *sto
 }
 
 func (s *Server) createQuestion(w http.ResponseWriter, r *http.Request, user *store.User) {
-	doc := s.owned(w, r, user)
+	doc := s.readyDoc(w, r, user)
 	if doc == nil {
 		return
 	}
@@ -455,7 +532,7 @@ func (s *Server) createQuestion(w http.ResponseWriter, r *http.Request, user *st
 }
 
 func (s *Server) report(w http.ResponseWriter, r *http.Request, user *store.User) (export.Report, bool) {
-	doc := s.owned(w, r, user)
+	doc := s.readyDoc(w, r, user)
 	if doc == nil {
 		return export.Report{}, false
 	}

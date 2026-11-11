@@ -3,6 +3,7 @@ package server
 import (
 	"archive/zip"
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -14,8 +15,10 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-pdf/fpdf"
 	"github.com/google/uuid"
@@ -137,6 +140,12 @@ type doc struct {
 	Title     string `json:"title"`
 	Content   string `json:"content"`
 	WordCount int    `json:"word_count"`
+	Status    string `json:"status"`
+	Progress  int    `json:"progress"`
+	Stage     string `json:"stage"`
+	Depth     string `json:"depth"`
+	Source    string `json:"source"`
+	Subgenre  string `json:"subgenre"`
 	Analysis  struct {
 		Method      string `json:"method"`
 		Limitations string `json:"limitations"`
@@ -163,7 +172,27 @@ func (c *client) document(content string) doc {
 	}
 	var d doc
 	r.json(c.t, &d)
-	return d
+	return c.waitReady(d.ID)
+}
+
+// waitReady polls a document until its background analysis has finished.
+func (c *client) waitReady(id string) doc {
+	c.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var d doc
+		r := c.do("GET", "/api/documents/"+id, nil)
+		r.json(c.t, &d)
+		if d.Status == "ready" {
+			return d
+		}
+		if d.Status == "error" {
+			c.t.Fatalf("analysis failed: %s", r.body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.t.Fatal("analysis did not finish")
+	return doc{}
 }
 
 func TestAuthProfileAndRevokedCookie(t *testing.T) {
@@ -308,6 +337,7 @@ func TestCrossUserAccessIsolation(t *testing.T) {
 		{"DELETE", path + "/notes/" + note["id"].(string), nil}, {"GET", path + "/questions", nil},
 		{"POST", path + "/questions", map[string]string{"question": "Где Иван?"}},
 		{"GET", path + "/export.pdf", nil}, {"GET", path + "/export.png", nil},
+		{"GET", path + "/status", nil}, {"POST", path + "/analyze", nil},
 	}
 	for _, ch := range checks {
 		if r := other.do(ch.method, ch.url, ch.body); r.status != 404 {
@@ -395,6 +425,11 @@ func TestUploadTXTAndEPUB(t *testing.T) {
 	r = c.upload("story.epub", data, map[string]string{"title": "EPUB"})
 	if r.status != 201 || !strings.Contains(string(r.body), "Иван") {
 		t.Fatalf("epub: %d %s", r.status, r.body)
+	}
+	var created doc
+	r.json(t, &created)
+	if ready := c.waitReady(created.ID); ready.Source != "epub" || len(ready.Analysis.Entities) == 0 {
+		t.Fatalf("epub source/analysis: %+v", ready)
 	}
 	// The title defaults to the file name, as with drag-and-drop uploads.
 	r = c.upload("Моя книга.txt", []byte(sampleText), nil)
@@ -563,6 +598,7 @@ func TestEPUBParentPathsPreserveAllChapters(t *testing.T) {
 	r := c.upload("valid.epub", epub(files), map[string]string{"title": "Главы"})
 	var d doc
 	r.json(t, &d)
+	d = c.waitReady(d.ID)
 	if r.status != 201 || !strings.Contains(d.Content, "Анна встретила Ивана") || !strings.Contains(d.Content, "Мария передала Анне") || len(d.Analysis.Chapters) != 2 {
 		t.Fatalf("epub chapters: %d %s", r.status, r.body)
 	}
@@ -586,4 +622,102 @@ func mustURL(raw string) *url.URL {
 		panic(err)
 	}
 	return u
+}
+
+func TestBackgroundAnalysisProgressAndDepth(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := New(Config{DataDir: dir, SecretKey: "test-only-secret-key-which-is-long-enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.stageDelay = 80 * time.Millisecond
+	ts := httptest.NewServer(srv)
+	defer func() { ts.Close(); srv.Close() }()
+	c := newClient(t, ts)
+	c.register()
+	r := c.do("POST", "/api/documents", map[string]any{"title": "Фон", "content": sampleText, "subgenre": "Повесть", "depth": "basic"})
+	var d doc
+	r.json(t, &d)
+	if r.status != 201 || d.Status != "processing" || d.Stage != "extract" || d.Subgenre != "Повесть" || d.Depth != "basic" || d.Source != "text" {
+		t.Fatalf("created: %d %s", r.status, r.body)
+	}
+	path := "/api/documents/" + d.ID
+	// While the analysis runs, dependent operations are refused.
+	if r := c.do("POST", path+"/questions", map[string]string{"question": "Где Иван?"}); r.status != 409 {
+		t.Fatalf("question during analysis: %d", r.status)
+	}
+	if r := c.do("GET", path+"/export.pdf", nil); r.status != 409 {
+		t.Fatalf("export during analysis: %d", r.status)
+	}
+	stages := map[string]bool{}
+	lastProgress := 0
+	for i := 0; i < 400; i++ {
+		var cur doc
+		c.do("GET", path+"/status", nil).json(t, &cur)
+		if cur.Progress < lastProgress {
+			t.Fatalf("progress went back: %d -> %d", lastProgress, cur.Progress)
+		}
+		lastProgress = cur.Progress
+		stages[cur.Stage] = true
+		if cur.Status == "ready" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, st := range []string{"entities", "relations", "graph", "report", "done"} {
+		if !stages[st] {
+			t.Fatalf("stage %s not observed: %v", st, stages)
+		}
+	}
+	basic := c.waitReady(d.ID)
+	if basic.Depth != "basic" || len(basic.Analysis.Entities) > 30 {
+		t.Fatalf("basic depth: %s %d", basic.Depth, len(basic.Analysis.Entities))
+	}
+	srv.stageDelay = 0
+	if r := c.do("POST", path+"/analyze", map[string]string{"depth": "full"}); r.status != 202 {
+		t.Fatalf("reanalyze: %d %s", r.status, r.body)
+	}
+	if full := c.waitReady(d.ID); full.Depth != "full" || len(full.Analysis.Entities) < len(basic.Analysis.Entities) {
+		t.Fatalf("full depth: %s %d", full.Depth, len(full.Analysis.Entities))
+	}
+	var list []map[string]any
+	c.do("GET", "/api/documents", nil).json(t, &list)
+	if list[0]["status"] != "ready" || list[0]["note"] == "" {
+		t.Fatalf("summary: %v", list[0])
+	}
+}
+
+func TestOldDatabaseIsMigrated(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "atlas.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema of the first (Python) release, without background-analysis columns.
+	for _, st := range []string{
+		`CREATE TABLE users (id VARCHAR(36) PRIMARY KEY, login VARCHAR(80) UNIQUE, name VARCHAR(100), password_hash TEXT, language VARCHAR(5), private BOOLEAN, avatar TEXT)`,
+		`CREATE TABLE documents (id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36), title VARCHAR(250), author VARCHAR(180), year INTEGER, genre VARCHAR(80), created_at VARCHAR(40), content TEXT, analysis JSON)`,
+		`INSERT INTO users VALUES ('u1', 'old_user', 'Старый', '` + hashPassword("old-password-1") + `', 'ru', 1, NULL)`,
+		`INSERT INTO documents VALUES ('d1', 'u1', 'Старый текст', '', NULL, 'Художественный', '2026-01-01T00:00:00+00:00', 'Анна встретила Ивана.', '{"entities":[],"edges":[],"chapters":[],"keywords":[],"word_count":3}')`,
+	} {
+		if _, err := db.Exec(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	srv, err := New(Config{DataDir: dir, SecretKey: "test-only-secret-key-which-is-long-enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer func() { ts.Close(); srv.Close() }()
+	c := newClient(t, ts)
+	if r := c.do("POST", "/api/auth/login", map[string]string{"login": "old_user", "password": "old-password-1"}); r.status != 200 {
+		t.Fatalf("login: %d %s", r.status, r.body)
+	}
+	var list []map[string]any
+	c.do("GET", "/api/documents", nil).json(t, &list)
+	if len(list) != 1 || list[0]["status"] != "ready" || list[0]["source"] != "text" {
+		t.Fatalf("migrated list: %v", list)
+	}
 }

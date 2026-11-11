@@ -7,7 +7,7 @@ github.com/golang-jwt/jwt/v5 (MIT), github.com/google/uuid (BSD-3-Clause),
 github.com/jackc/pgx/v5 (MIT), github.com/ledongthuc/pdf (BSD-3-Clause),
 modernc.org/sqlite and modernc.org/libc (BSD-3-Clause),
 golang.org/x/crypto, x/image, x/net, x/text (BSD-3-Clause).
-Font: DejaVu Sans, see backend/internal/export/assets/DejaVu-LICENSE.txt.
+Fonts: Inter (SIL Open Font License 1.1, bundled via @fontsource-variable/inter) for the UI; DejaVu Sans see backend/internal/export/assets/DejaVu-LICENSE.txt.
 
 Browser bundle
 

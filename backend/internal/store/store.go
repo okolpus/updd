@@ -46,6 +46,15 @@ type Document struct {
 	CreatedAt string
 	Content   string
 	Analysis  string
+	// Background analysis state: processing, ready or error.
+	Status   string
+	Progress int
+	Stage    string
+	Note     string
+	Error    string
+	Depth    string
+	Source   string // txt, pdf, epub or text (pasted)
+	Subgenre string
 }
 
 type Note struct {
@@ -154,8 +163,28 @@ func (s *Store) migrate() error {
 			question TEXT NOT NULL, answer TEXT NOT NULL, sources ` + jsonType + ` NOT NULL, mode VARCHAR(40) NOT NULL DEFAULT 'extractive', created_at VARCHAR(40) NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS ix_questions_document_id ON questions (document_id)`,
 	}
+	// Columns added after the first release; older databases get them with defaults.
+	added := []string{
+		`status VARCHAR(20) NOT NULL DEFAULT 'ready'`,
+		`progress INTEGER NOT NULL DEFAULT 100`,
+		`stage VARCHAR(20) NOT NULL DEFAULT 'done'`,
+		`note TEXT NOT NULL DEFAULT ''`,
+		`error TEXT NOT NULL DEFAULT ''`,
+		`depth VARCHAR(10) NOT NULL DEFAULT 'full'`,
+		`source VARCHAR(10) NOT NULL DEFAULT 'text'`,
+		`subgenre VARCHAR(80) NOT NULL DEFAULT ''`,
+	}
 	for _, st := range statements {
 		if _, err := s.db.Exec(st); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+	for _, column := range added {
+		st := "ALTER TABLE documents ADD COLUMN " + column
+		if s.postgres {
+			st = "ALTER TABLE documents ADD COLUMN IF NOT EXISTS " + column
+		}
+		if _, err := s.db.Exec(st); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
@@ -220,12 +249,13 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return err
 }
 
-const documentColumns = `id, user_id, title, author, year, genre, created_at, content, analysis`
+const documentColumns = `id, user_id, title, author, year, genre, created_at, content, analysis, status, progress, stage, note, error, depth, source, subgenre`
 
 func scanDocument(row interface{ Scan(...any) error }) (*Document, error) {
 	d := &Document{}
 	var year sql.NullInt64
-	err := row.Scan(&d.ID, &d.UserID, &d.Title, &d.Author, &year, &d.Genre, &d.CreatedAt, &d.Content, &d.Analysis)
+	err := row.Scan(&d.ID, &d.UserID, &d.Title, &d.Author, &year, &d.Genre, &d.CreatedAt, &d.Content, &d.Analysis,
+		&d.Status, &d.Progress, &d.Stage, &d.Note, &d.Error, &d.Depth, &d.Source, &d.Subgenre)
 	if year.Valid {
 		y := int(year.Int64)
 		d.Year = &y
@@ -234,8 +264,9 @@ func scanDocument(row interface{ Scan(...any) error }) (*Document, error) {
 }
 
 func (s *Store) CreateDocument(ctx context.Context, d *Document) error {
-	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO documents (`+documentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		d.ID, d.UserID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, d.Content, d.Analysis)
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO documents (`+documentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		d.ID, d.UserID, d.Title, d.Author, d.Year, d.Genre, d.CreatedAt, d.Content, d.Analysis,
+		d.Status, d.Progress, d.Stage, d.Note, d.Error, d.Depth, d.Source, d.Subgenre)
 	return err
 }
 
@@ -265,8 +296,8 @@ func (s *Store) Document(ctx context.Context, id string) (*Document, error) {
 }
 
 func (s *Store) UpdateDocument(ctx context.Context, d *Document) error {
-	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET title = ?, author = ?, year = ?, genre = ? WHERE id = ?`),
-		d.Title, d.Author, d.Year, d.Genre, d.ID)
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET title = ?, author = ?, year = ?, genre = ?, subgenre = ? WHERE id = ?`),
+		d.Title, d.Author, d.Year, d.Genre, d.Subgenre, d.ID)
 	return err
 }
 
@@ -343,4 +374,48 @@ func (s *Store) CreateQuestion(ctx context.Context, q *Question) error {
 	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO questions (id, document_id, question, answer, sources, mode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`),
 		q.ID, q.DocumentID, q.Question, q.Answer, q.Sources, q.Mode, q.CreatedAt)
 	return err
+}
+
+// SetProgress records the current analysis stage of a document.
+func (s *Store) SetProgress(ctx context.Context, id string, progress int, stage, note string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET status = 'processing', progress = ?, stage = ?, note = ?, error = '' WHERE id = ?`),
+		progress, stage, note, id)
+	return err
+}
+
+// StartAnalysis puts a document back into the processing state.
+func (s *Store) StartAnalysis(ctx context.Context, id, depth string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET status = 'processing', progress = 5, stage = 'extract', note = '', error = '', depth = ? WHERE id = ?`), depth, id)
+	return err
+}
+
+// FinishAnalysis stores the result and marks the document ready.
+func (s *Store) FinishAnalysis(ctx context.Context, id, analysis, note string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET analysis = ?, status = 'ready', progress = 100, stage = 'done', note = ?, error = '' WHERE id = ?`),
+		analysis, note, id)
+	return err
+}
+
+// FailAnalysis marks the document as failed with a message for the user.
+func (s *Store) FailAnalysis(ctx context.Context, id, message string) error {
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE documents SET status = 'error', error = ? WHERE id = ?`), message, id)
+	return err
+}
+
+// ProcessingIDs lists documents whose analysis was interrupted, e.g. by a restart.
+func (s *Store) ProcessingIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM documents WHERE status = 'processing'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

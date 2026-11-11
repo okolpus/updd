@@ -39,6 +39,10 @@ type Server struct {
 	secret []byte
 	mux    *http.ServeMux
 	limits *rateLimiter
+	jobs   sync.WaitGroup
+	slots  chan struct{}
+	// stageDelay slows analysis stages down; used only by tests.
+	stageDelay time.Duration
 }
 
 // New opens the database and prepares routes.
@@ -57,12 +61,17 @@ func New(cfg Config) (*Server, error) {
 	if cfg.FrontendOrigin == "" {
 		cfg.FrontendOrigin = "http://127.0.0.1:5173"
 	}
-	s := &Server{cfg: cfg, store: st, secret: secret, mux: http.NewServeMux(), limits: newRateLimiter()}
+	s := &Server{cfg: cfg, store: st, secret: secret, mux: http.NewServeMux(), limits: newRateLimiter(), slots: make(chan struct{}, 2)}
 	s.routes()
+	s.resumeInterrupted()
 	return s, nil
 }
 
-func (s *Server) Close() error { return s.store.Close() }
+// Close waits for running analyses and closes the database.
+func (s *Server) Close() error {
+	s.jobs.Wait()
+	return s.store.Close()
+}
 
 // loadSecret uses SECRET_KEY or a key persisted in the data directory.
 func loadSecret(cfg Config) ([]byte, error) {
@@ -106,6 +115,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/documents/{id}", s.authed(s.getDocument))
 	m.HandleFunc("PATCH /api/documents/{id}", s.authed(s.patchDocument))
 	m.HandleFunc("DELETE /api/documents/{id}", s.authed(s.deleteDocument))
+	m.HandleFunc("POST /api/documents/{id}/analyze", s.authed(s.reanalyze))
+	m.HandleFunc("GET /api/documents/{id}/status", s.authed(s.documentStatus))
 	m.HandleFunc("GET /api/documents/{id}/notes", s.authed(s.listNotes))
 	m.HandleFunc("POST /api/documents/{id}/notes", s.authed(s.createNote))
 	m.HandleFunc("DELETE /api/documents/{id}/notes/{note}", s.authed(s.deleteNote))

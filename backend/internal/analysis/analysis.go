@@ -59,6 +59,30 @@ type Result struct {
 	Chapters    []Chapter `json:"chapters"`
 	Keywords    []Keyword `json:"keywords"`
 	WordCount   int       `json:"word_count"`
+	Depth       string    `json:"depth,omitempty"`
+}
+
+// Options control the depth of the analysis and report progress.
+type Options struct {
+	// Depth is "basic" (main entities and their links) or "full" (default).
+	Depth string
+	// Progress is called when a stage starts: entities, relations, graph, report.
+	Progress func(stage, note string)
+}
+
+type limits struct{ entities, edges, singles, places, concepts int }
+
+func (o Options) limits() limits {
+	if o.Depth == "basic" {
+		return limits{30, 80, 12, 8, 8}
+	}
+	return limits{MaxEntities, MaxEdges, 25, 14, 24}
+}
+
+func (o Options) report(stage, note string) {
+	if o.Progress != nil {
+		o.Progress(stage, note)
+	}
 }
 
 const (
@@ -226,7 +250,12 @@ var (
 )
 
 // Analyze builds the entity graph, chapter statistics and keywords for a text.
-func Analyze(text string) Result {
+func Analyze(text string) Result { return AnalyzeWith(text, Options{}) }
+
+// AnalyzeWith is Analyze with a depth setting and progress callbacks.
+func AnalyzeWith(text string, opts Options) Result {
+	lim := opts.limits()
+	opts.report("entities", "")
 	chapters := SplitChapters(text)
 	var rows []sentenceRow
 	stats := map[string]*stat{}
@@ -393,7 +422,7 @@ func Analyze(text string) Result {
 			placeNames = append(placeNames, stem)
 			continue
 		}
-		if personStems[stem] || singles >= 25 {
+		if personStems[stem] || singles >= lim.singles {
 			continue
 		}
 		singles++
@@ -432,7 +461,7 @@ func Analyze(text string) Result {
 	}
 	placeStems := map[string]bool{}
 	for i, label := range places.mostCommon() {
-		if i >= 14 {
+		if i >= lim.places {
 			break
 		}
 		candidates = append(candidates, candidate{label, "place", places.counts[label], placeTargets[label]})
@@ -481,7 +510,7 @@ func Analyze(text string) Result {
 	}
 	concepts := 0
 	for _, stem := range ranked {
-		if concepts >= 24 {
+		if concepts >= lim.concepts {
 			break
 		}
 		if personStems[stem] || placeStems[stem] || eventStems[stem] != "" || locationStems[stem] != "" {
@@ -501,11 +530,18 @@ func Analyze(text string) Result {
 		}
 		seen[k] = true
 		unique = append(unique, c)
-		if len(unique) >= MaxEntities {
+		if len(unique) >= lim.entities {
 			break
 		}
 	}
 
+	persons := 0
+	for _, c := range unique {
+		if c.kind == "person" {
+			persons++
+		}
+	}
+	opts.report("relations", fmt.Sprintf("Найдено персонажей: %d, сущностей всего: %d", persons, len(unique)))
 	type matcher struct {
 		kind    string
 		targets []string
@@ -612,6 +648,7 @@ func Analyze(text string) Result {
 		}
 	}
 
+	opts.report("graph", "")
 	kinds := map[string]string{"person": "Персонаж или имя", "place": "Место", "concept": "Ключевое понятие", "event": "Событие или процесс"}
 	valid := map[string]int{}
 	kept := []Entity{}
@@ -645,7 +682,7 @@ func Analyze(text string) Result {
 			degree[a]++
 			degree[b]++
 		}
-		if len(edges) >= MaxEdges {
+		if len(edges) >= lim.edges {
 			break
 		}
 	}
@@ -664,6 +701,7 @@ func Analyze(text string) Result {
 			}
 		}
 	}
+	opts.report("report", fmt.Sprintf("Связей в графе: %d", len(edges)))
 	keywords := []Keyword{}
 	for _, stem := range ranked {
 		if len(keywords) >= 35 {
@@ -674,7 +712,11 @@ func Analyze(text string) Result {
 		}
 		keywords = append(keywords, Keyword{nounLabel(stem), nouns.counts[stem]})
 	}
-	return Result{Method: Method, Limitations: Limitations, Entities: kept, Edges: edges, Chapters: chapters,
+	depth := "full"
+	if opts.Depth == "basic" {
+		depth = "basic"
+	}
+	return Result{Method: Method, Limitations: Limitations, Depth: depth, Entities: kept, Edges: edges, Chapters: chapters,
 		Keywords: keywords, WordCount: len(Word.FindAllStringIndex(text, -1))}
 }
 
