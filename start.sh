@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
+# Builds (when needed) and starts Semantic Atlas on http://127.0.0.1:8765.
 set -euo pipefail
 cd "$(dirname "$0")"
-atlas_python=""
-for candidate in python3.12 python3.13 python3; do
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) and sys.version_info[:3] != (3, 14, 1) else 1)' >/dev/null 2>&1; then
-    atlas_python="$candidate"
-    break
-  fi
-done
-if [ -z "$atlas_python" ]; then
-  echo "Установите Python 3.12 или новее. Рекомендуется Python 3.12; версия 3.14.1 не поддерживается NetworkX." >&2
+
+if ! command -v go >/dev/null 2>&1; then
+  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go /usr/local/bin/go "$HOME/go/bin/go"; do
+    if [ -x "$candidate" ]; then PATH="$(dirname "$candidate"):$PATH"; break; fi
+  done
+fi
+if ! command -v go >/dev/null 2>&1; then
+  echo "Нужен Go 1.22 или новее. Установите его: brew install go  (или https://go.dev/dl/), затем снова запустите start.sh." >&2
   exit 1
 fi
-if [ ! -d .venv ]; then "$atlas_python" -m venv .venv; fi
-if [ ! -f .venv/atlas-requirements ] || ! cmp -s backend/requirements.txt .venv/atlas-requirements; then
-  .venv/bin/python -m pip install -r backend/requirements.txt
-  cp backend/requirements.txt .venv/atlas-requirements
-fi
+
 if [ ! -f frontend/dist/index.html ]; then
   if ! command -v npm >/dev/null 2>&1; then
     echo "Для сборки интерфейса установите Node.js 22 LTS с npm." >&2
@@ -24,8 +20,15 @@ if [ ! -f frontend/dist/index.html ]; then
   fi
   (cd frontend && npm ci && npm run build)
 fi
-echo "Семантический атлас: http://127.0.0.1:8765"
-echo "Остановка: Ctrl+C. Документация API: http://127.0.0.1:8765/docs"
-cd backend
-exec ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 
+mkdir -p bin
+# Go downloads the toolchain version from go.mod automatically if the installed one is older.
+newest_source=$(find go.mod go.sum backend/cmd backend/internal frontend/dist frontend/embed.go -type f -newer bin/atlas 2>/dev/null | head -n 1 || true)
+if [ ! -x bin/atlas ] || [ -n "$newest_source" ]; then
+  echo "Сборка сервера…"
+  GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" go build -o bin/atlas ./backend/cmd/atlas
+fi
+
+echo "Семантический атлас: http://${ATLAS_ADDR:-127.0.0.1:8765}"
+echo "Остановка: Ctrl+C."
+exec ./bin/atlas

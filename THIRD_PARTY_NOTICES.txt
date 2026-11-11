@@ -1,4 +1,15 @@
-Third party notices for the browser bundle
+Third party notices
+
+Server (Go modules, see go.mod for exact versions), each under its own free
+software license: github.com/fogleman/gg (MIT), github.com/go-pdf/fpdf (MIT),
+github.com/golang/freetype (FreeType License / GPLv2, used under FTL),
+github.com/golang-jwt/jwt/v5 (MIT), github.com/google/uuid (BSD-3-Clause),
+github.com/jackc/pgx/v5 (MIT), github.com/ledongthuc/pdf (BSD-3-Clause),
+modernc.org/sqlite and modernc.org/libc (BSD-3-Clause),
+golang.org/x/crypto, x/image, x/net, x/text (BSD-3-Clause).
+Font: DejaVu Sans, see backend/internal/export/assets/DejaVu-LICENSE.txt.
+
+Browser bundle
 
 These dependencies are provided under their respective free software licenses.
 

@@ -4,7 +4,7 @@ import {
   Alert, Avatar, Badge, Button, Checkbox, Descriptions, Divider, Drawer,
   Empty, Form, Input, InputNumber, List, Modal as AntModal, Popconfirm,
   Segmented, Select, Space, Spin, Switch, Table, Tabs, Tag, Tooltip,
-  Typography, Upload,
+  Progress, Typography, Upload,
 } from 'antd';
 import {
   ArrowRight, BookOpen, Check, ChevronRight, Download, FileText,
@@ -13,6 +13,7 @@ import {
   X, ZoomIn, ZoomOut, Maximize2,
 } from 'lucide-react';
 import { createRequestGuard } from './requestGuard.js';
+import { fileProblem, hasFiles } from './files.js';
 
 const { TextArea, Password } = Input;
 const { Text, Title, Paragraph } = Typography;
@@ -153,6 +154,49 @@ function Graph({analysis,selected,onSelect,onEdge,filters,search}){
  return <div className="graph-canvas" ref={host}><svg ref={svgRef} className="graph-svg" aria-label="Интерактивный граф сущностей текста"/>{!visible.length&&<div className="graph-empty"><Network size={36}/><h3>Нет сущностей для показа</h3><p>Измените фильтры или попробуйте другой текст.</p></div>}<div className="canvas-caption"><span className="status-dot"/>{num(visible.length)} сущностей на карте <span className="canvas-separator">/</span><span>Размер узла — частота упоминаний</span></div><div className="graph-controls"><IconButton label="Приблизить граф" onClick={()=>zoomBy(1.3)}><ZoomIn size={18}/></IconButton><IconButton label="Отдалить граф" onClick={()=>zoomBy(.77)}><ZoomOut size={18}/></IconButton><IconButton label="Сбросить масштаб" onClick={fit}><Maximize2 size={18}/></IconButton></div><div className="graph-tip">Перетаскивайте узлы · прокручивайте для масштаба</div></div>
 }
 
+function DropOverlay() {
+  return <div className="drop-overlay" role="presentation">
+    <div className="drop-overlay-box">
+      <UploadIcon size={40} />
+      <Title level={3}>Отпустите, чтобы проанализировать</Title>
+      <Text type="secondary">TXT, EPUB или PDF с текстовым слоем, до 12 МБ. Можно несколько книг сразу.</Text>
+    </div>
+  </div>;
+}
+function DropProgress({ job }) {
+  if (!job) return null;
+  const percent = Math.round(job.done / job.total * 100);
+  return <div className="drop-progress" role="status" aria-live="polite">
+    <Spin size="small" />
+    <div className="drop-progress-body">
+      <Text strong ellipsis>Анализ «{job.current}»</Text>
+      <Text type="secondary">{job.total > 1 ? `Файл ${job.done + 1} из ${job.total}. ` : ''}Строим граф связей, главы и аналитику…</Text>
+      {job.total > 1 && <Progress percent={percent} size="small" showInfo={false} />}
+    </div>
+  </div>;
+}
+function DropZone({ onFiles, onPaste, busy }) {
+  const input = useRef(null);
+  const [over, setOver] = useState(false);
+  return <div className={`drop-zone ${over ? 'over' : ''} ${busy ? 'busy' : ''}`} role="button" tabIndex={0}
+    aria-label="Загрузить книгу: перетащите файл или нажмите, чтобы выбрать"
+    onClick={() => !busy && input.current?.click()}
+    onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && !busy) { e.preventDefault(); input.current?.click(); } }}
+    onDragOver={e => { if (hasFiles(e)) { e.preventDefault(); setOver(true); } }}
+    onDragLeave={() => setOver(false)} onDrop={() => setOver(false)}>
+    <input ref={input} type="file" accept=".txt,.pdf,.epub" multiple hidden
+      onChange={e => { const files = Array.from(e.target.files || []); e.target.value = ''; if (files.length) onFiles(files); }} />
+    <div className="drop-zone-icon"><BookOpen size={30} /></div>
+    <Title level={4}>Перетащите книгу сюда</Title>
+    <Paragraph type="secondary">Атлас разберёт текст на главы, найдёт персонажей, места и события, покажет, кто с кем связан, и подготовит аналитику и заметки.</Paragraph>
+    <Space wrap className="drop-zone-actions">
+      <Button type="primary" icon={icon(UploadIcon)} disabled={busy} onClick={e => { e.stopPropagation(); input.current?.click(); }}>Выбрать файлы</Button>
+      <Button icon={icon(FileText)} disabled={busy} onClick={e => { e.stopPropagation(); onPaste(); }}>Вставить текст</Button>
+    </Space>
+    <Text type="secondary" className="drop-zone-formats">TXT · EPUB · PDF с текстовым слоем · до 12 МБ</Text>
+  </div>;
+}
+
 function MetadataFields({ genre }) {
   const genres = [...new Set([genre, ...GENRES].filter(Boolean))];
   return <>
@@ -268,7 +312,7 @@ function MethodModal({ onClose, analysis }) {
   return <Modal title="Как работает анализ" onClose={onClose} wide>
     <Typography className="method-content">
       <Title level={5}>Сущности и связи</Title>
-      <Paragraph>Локальный анализ использует морфологию русского языка, частотность слов и правила распознавания имён, мест и событий. Совместные упоминания образуют связи. Типизированные связи — предположения по языковым признакам.</Paragraph>
+      <Paragraph>Локальный анализ на сервере сводит формы слов по окончаниям русского языка, учитывает частотность и контекст (предлоги, заглавные буквы, слова-маркеры) и по этим правилам распознаёт имена, места и события. Совместные упоминания образуют связи. Типизированные связи — предположения по языковым признакам.</Paragraph>
       <Title level={5}>Вопросы по тексту</Title>
       <Paragraph>Система находит подходящие фрагменты и сущности графа. Ответы опираются на источник без генеративной модели и не дополняют содержание произведения.</Paragraph>
       <Title level={5}>Ограничения</Title>
@@ -459,6 +503,7 @@ function SidebarContent({ user, documents, doc, query, setQuery, sort, setSort, 
     <div className="sidebar-brand"><Brand /></div>
     <div className="sidebar-tools"><div className="sidebar-title"><Text strong>Библиотека</Text><Badge count={documents.length} showZero color="#8c8c8c" /></div>
       <Button type="primary" block icon={icon(Plus)} onClick={() => setModal('upload')}>Добавить текст</Button>
+      <Text type="secondary" className="sidebar-drop-hint">или перетащите файлы книг в окно</Text>
       <Input allowClear prefix={icon(Search, 15)} placeholder="Поиск по библиотеке" aria-label="Поиск по библиотеке" value={query} onChange={e => setQuery(e.target.value)} />
       <Select aria-label="Сортировка библиотеки" value={sort} onChange={setSort} options={[
         { label: 'Сначала новые', value: 'created' }, { label: 'По названию', value: 'title' }, { label: 'По автору', value: 'author' },
@@ -489,6 +534,8 @@ export default function App() {
   const [sidebar, setSidebar] = useState(false), [notes, setNotes] = useState([]), [questions, setQuestions] = useState([]);
   const [fragment, setFragment] = useState(null), [noteEntity, setNoteEntity] = useState(''), [exportBusy, setExportBusy] = useState('');
   const [mobile, setMobile] = useState(() => window.innerWidth <= 760);
+  const [dragging, setDragging] = useState(false), [dropJob, setDropJob] = useState(null);
+  const dragDepth = useRef(0);
   const [narrow, setNarrow] = useState(() => window.innerWidth <= 1100);
   useEffect(() => {
     const resize = () => { setMobile(window.innerWidth <= 760); setNarrow(window.innerWidth <= 1100); };
@@ -514,6 +561,54 @@ export default function App() {
  async function ask(question){const epoch=sessionEpoch.current,req=docRequest.current,id=doc.id;await requestGuard.runDocument(epoch,req,()=>api(`/documents/${id}/questions`,{method:'POST',body:{question}}),q=>setQuestions(v=>[...v,q]))}
  async function exportDoc(type){const epoch=sessionEpoch.current,req=docRequest.current,id=doc.id,title=doc.title;setExportBusy(type);setError('');try{const r=await fetch(`/api/documents/${id}/export.${type}`,{credentials:'same-origin'});if(!r.ok){const e=await r.json();throw new Error(e.detail||'Не удалось экспортировать файл.')}const blob=await r.blob();if(!documentValid(epoch,req))return;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${title.slice(0,70)}.${type}`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);flash('Файл подготовлен к скачиванию')}catch(e){if(documentValid(epoch,req))setError(e.message)}finally{if(documentValid(epoch,req))setExportBusy('')}}
  async function logout(){const epoch=++sessionEpoch.current;docRequest.current++;listRequest.current++;clearWorkspace();setUser(null);setChecking(true);try{await api('/auth/logout',{method:'POST'})}catch(e){if(sessionValid(epoch))setError(e.message)}finally{if(sessionValid(epoch))setChecking(false)}}
+
+  async function uploadFiles(files) {
+    if (dropJob) { setError('Дождитесь окончания текущего анализа.'); return; }
+    const problems = files.map(fileProblem).filter(Boolean);
+    const valid = files.filter(f => !fileProblem(f));
+    setError(problems.join(' '));
+    if (!valid.length) return;
+    const epoch = sessionEpoch.current;
+    let last = null;
+    const failed = [...problems];
+    for (let i = 0; i < valid.length; i++) {
+      if (!sessionValid(epoch)) return;
+      setDropJob({ total: valid.length, done: i, current: valid[i].name });
+      const body = new FormData();
+      body.append('file', valid[i]);
+      body.append('genre', 'Художественный');
+      try { last = await api('/documents/upload', { method: 'POST', body }); }
+      catch (e) { failed.push(`«${valid[i].name}»: ${e.message}`); }
+    }
+    if (!sessionValid(epoch)) return;
+    setDropJob(null);
+    if (last) {
+      await created(last, epoch);
+      if (valid.length > 1 && sessionValid(epoch)) flash(`Добавлено текстов: ${valid.length - (failed.length - problems.length)}`);
+    }
+    if (sessionValid(epoch)) setError(failed.join(' '));
+  }
+  const uploadRef = useRef(uploadFiles);
+  uploadRef.current = uploadFiles;
+  // Window-wide drop target: books can be dropped anywhere once signed in.
+  useEffect(() => {
+    if (!user || modal) { dragDepth.current = 0; setDragging(false); return undefined; }
+    const enter = e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current++; setDragging(true); };
+    const over = e => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } };
+    const leave = e => { if (!hasFiles(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragging(false); };
+    const drop = e => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); dragDepth.current = 0; setDragging(false);
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length) uploadRef.current(files);
+    };
+    window.addEventListener('dragenter', enter); window.addEventListener('dragover', over);
+    window.addEventListener('dragleave', leave); window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', enter); window.removeEventListener('dragover', over);
+      window.removeEventListener('dragleave', leave); window.removeEventListener('drop', drop);
+    };
+  }, [user, modal]);
 
   if (checking) return <div className="boot"><Brand /><Busy text="Загрузка приложения…" /></div>;
   if (!user) return <Auth onAuth={onAuth} />;
@@ -586,9 +681,8 @@ export default function App() {
         <footer className="workspace-footer"><Text type="secondary">{num(doc.analysis.entities.length)} сущностей · {num(doc.analysis.edges.length)} связей · {doc.analysis.chapters.length} глав и блоков</Text>
           {!inspector && <Button type="link" size="small" onClick={() => { setInspector(true); setInspectorMode('entity'); }}>Открыть панель</Button>}
         </footer>
-      </> : <div className="welcome"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={
-        <><Title level={4}>Библиотека</Title><Paragraph type="secondary">Выберите текст слева или добавьте новый для анализа.</Paragraph></>
-      }><Button type="primary" icon={icon(Plus)} onClick={() => setModal('upload')}>Добавить текст</Button></Empty></div>}
+      </> : <div className="welcome"><DropZone onFiles={uploadFiles} onPaste={() => setModal('upload')} busy={!!dropJob} />
+        {!!documents.length && <Text type="secondary" className="welcome-hint">Или выберите текст в библиотеке слева.</Text>}</div>}
     </main>
     {modal === 'upload' && <UploadModal key={user.id} onClose={() => setModal(null)} onCreated={d => created(d, renderedEpoch)} />}
     {modal === 'meta' && doc && <MetaModal doc={doc} onClose={() => setModal(null)} onSaved={async d => {
@@ -613,6 +707,8 @@ export default function App() {
         <Button block icon={icon(Network)} onClick={() => { setModal(null); exportDoc('png'); }}>Скачать граф PNG</Button>
       </Space>
     </Modal>}
+    {dragging && <DropOverlay />}
+    <DropProgress job={dropJob} />
     {toast && <div className="toast"><Alert type="success" showIcon title={toast} /></div>}
   </div>;
 }

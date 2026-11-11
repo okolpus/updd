@@ -1,9 +1,7 @@
 .git
-.venv
+bin
 **/node_modules
-**/__pycache__
-**/.pytest_cache
+backend/data
 data
 .env
 *.zip
-

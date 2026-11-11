@@ -10,3 +10,23 @@
 @media(max-width:760px){.graph-tip{display:none}}
 @media(min-width:1101px){.graph-canvas{min-height:0}}
 .analysis-summary .ant-descriptions-item-content{white-space:nowrap;font-variant-numeric:tabular-nums}.analysis-summary .ant-descriptions-item-label{word-break:normal}
+
+.sidebar-drop-hint{font-size:12px;text-align:center;margin-top:-4px}
+.welcome{flex-direction:column;gap:14px}
+.welcome-hint{font-size:13px}
+.drop-zone{width:min(640px,100%);display:flex;flex-direction:column;align-items:center;text-align:center;padding:44px 32px 32px;background:#fff;border:2px dashed #bfbfbf;border-radius:12px;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s}
+.drop-zone:hover,.drop-zone.over,.drop-zone:focus-visible{border-color:#1677ff;background:#f0f7ff}
+.drop-zone.over{box-shadow:0 0 0 4px rgba(22,119,255,.12)}
+.drop-zone.busy{cursor:progress;opacity:.75}
+.drop-zone-icon{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#e6f4ff;color:#1677ff;margin-bottom:16px}
+.drop-zone h4.ant-typography{margin:0 0 8px;font-size:20px}
+.drop-zone .ant-typography{max-width:460px}
+.drop-zone-actions{margin:8px 0 16px;justify-content:center}
+.drop-zone-formats{font-size:12px}
+.drop-overlay{position:fixed;inset:0;z-index:1200;background:rgba(22,119,255,.08);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;padding:24px;pointer-events:none}
+.drop-overlay-box{width:min(560px,100%);display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center;padding:48px 28px;background:rgba(255,255,255,.96);border:2px dashed #1677ff;border-radius:16px;color:#1677ff;box-shadow:0 12px 40px rgba(0,0,0,.12)}
+.drop-overlay-box h3.ant-typography{margin:4px 0 0;color:#262626}
+.drop-progress{position:fixed;right:24px;bottom:24px;z-index:1150;width:min(380px,calc(100vw - 32px));display:flex;gap:12px;align-items:flex-start;padding:14px 16px;background:#fff;border:1px solid #e8e8e8;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.12)}
+.drop-progress-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.drop-progress-body .ant-progress{margin:6px 0 0}
+@media (max-width:760px){.drop-zone{padding:32px 18px 24px}.drop-progress{right:16px;bottom:16px}.welcome{padding:16px}}

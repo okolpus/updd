@@ -5,16 +5,18 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
-COPY backend/ /app/backend/
-COPY --from=frontend /build/frontend/dist /app/frontend/dist
-RUN useradd --create-home --uid 10001 atlas && mkdir -p /app/data && chown -R atlas:atlas /app
-USER atlas
-WORKDIR /app/backend
-EXPOSE 8765
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8765"]
+FROM golang:1.26-bookworm AS server
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY backend/ backend/
+COPY frontend/embed.go frontend/
+COPY --from=frontend /build/frontend/dist frontend/dist
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /atlas ./backend/cmd/atlas
 
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=server /atlas /atlas
+ENV ATLAS_ADDR=0.0.0.0:8765 DATA_DIR=/app/data
+VOLUME /app/data
+EXPOSE 8765
+ENTRYPOINT ["/atlas"]
