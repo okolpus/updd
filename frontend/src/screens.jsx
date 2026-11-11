@@ -264,14 +264,6 @@ export function AddTextScreen({ onSubmit, onCancel, busy, registerDrop, ai }) {
             <button type="button" key={value} className={`depth-option ${meta.depth === value ? 'checked' : ''}`} onClick={() => set('depth', value)} aria-pressed={meta.depth === value}>
               <strong>{title}</strong><span>{hint}</span>
             </button>)}
-          <div className={`ai-toggle ${ai?.available ? '' : 'disabled'}`}>
-            <div className="ai-toggle-head">
-              <span className="ai-icon"><Sparkles size={16} /></span>
-              <strong>{ai?.available ? `Разбор через ${ai.model}` : 'Qwen не подключена'}</strong>
-            </div>
-            <span>{ai?.available ? 'Каждый текст проверяет локальная нейросеть Qwen: имена, дубли, подписи связей и ответы на вопросы.'
-              : `${ai?.reason || 'Нейросеть недоступна.'} Пока текст разберётся упрощённо и перепроверится Qwen автоматически, как только она заработает.`}</span>
-          </div>
         </section>
       </div>
       <div className="add-main">

@@ -374,12 +374,6 @@ export default function App() {
     </Drawer> : <aside className="sq-sidebar">{sidebar}</aside>}
     <main className={`sq-main ${view === 'document' ? 'is-doc' : ''}`}>
       {header}
-      {aiStatus?.enabled && !aiStatus.available && view !== 'document' && <div className="ai-banner" role="status">
-        <Sparkles size={18} />
-        <div><strong>Qwen не подключена.</strong> {aiStatus.reason} Тексты пока разбираются упрощённо и будут перепроверены Qwen автоматически.
-          Проще всего перезапустить приложение командой <code>bash start.sh</code>: оно само установит и запустит Ollama и скачает модель.</div>
-        <Button size="small" onClick={() => api('/ai').then(setAiStatus).catch(() => {})}>Проверить снова</Button>
-      </div>}
       {error && <div className="sq-error"><ErrorBox error={error} /></div>}
       <div className="sq-content">
         {view === 'library' && <LibraryScreen documents={documents} failed={failed} filters={libFilters} setFilters={setLibFilters} query={query}
