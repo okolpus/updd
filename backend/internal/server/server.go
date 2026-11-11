@@ -24,6 +24,9 @@ import (
 
 const maxRequestBytes = 16 * 1024 * 1024
 
+// apiVersion lets the web interface notice that an older server is answering.
+const apiVersion = 3
+
 // Config is read from the environment by the main package.
 type Config struct {
 	DataDir        string
@@ -184,7 +187,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "База данных недоступна.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "database": "ok", "server": "go", "api": apiVersion})
 }
 
 func (s *Server) spa(w http.ResponseWriter, r *http.Request) {

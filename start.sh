@@ -65,6 +65,28 @@ if [ "${ATLAS_AI:-on}" != "off" ]; then
   fi
 fi
 
+# --- Порт: старый сервер (в том числе прежняя Python-версия) мешает запуску ---------
+ADDR="${ATLAS_ADDR:-127.0.0.1:8765}"
+PORT="${ADDR##*:}"
+if command -v lsof >/dev/null 2>&1; then
+  for pid in $(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    case "$cmd" in
+      *uvicorn*app.main:app*|*bin/atlas*)
+        echo "Останавливаю прежний сервер атласа на порту $PORT (PID $pid)…"
+        kill "$pid" 2>/dev/null || true
+        for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+        kill -9 "$pid" 2>/dev/null || true
+        ;;
+      *)
+        echo "Порт $PORT занят другой программой: $cmd" >&2
+        echo "Закройте её или запустите атлас на другом порту: ATLAS_ADDR=127.0.0.1:8766 bash start.sh" >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
+
 echo "Семантический атлас: http://${ATLAS_ADDR:-127.0.0.1:8765}"
 echo "Остановка: Ctrl+C."
 exec ./bin/atlas

@@ -69,7 +69,7 @@ export default function App() {
   const [fragment, setFragment] = useState(null), [noteEntity, setNoteEntity] = useState(''), [exportBusy, setExportBusy] = useState('');
   const [mobile, setMobile] = useState(() => window.innerWidth <= 900), [narrow, setNarrow] = useState(() => window.innerWidth <= 1100);
   const [menuOpen, setMenuOpen] = useState(false), [submitting, setSubmitting] = useState(false);
-  const [dragging, setDragging] = useState(false), [aiStatus, setAiStatus] = useState(null);
+  const [dragging, setDragging] = useState(false), [aiStatus, setAiStatus] = useState(null), [staleServer, setStaleServer] = useState(false);
   const dragDepth = useRef(0), addDropRef = useRef(null);
 
   useEffect(() => {
@@ -89,6 +89,10 @@ export default function App() {
     setTab('graph'); setInspectorMode('entity'); setView('library'); setProgressId(null); setFailed([]); setLibFilters({});
   }
 
+  // An older server (e.g. the earlier Python version still running) lacks newer API routes.
+  useEffect(() => {
+    api('/health').then(h => setStaleServer(h.server !== 'go' || (h.api || 0) < 3)).catch(() => {});
+  }, []);
   useEffect(() => {
     const epoch = sessionEpoch.current, c = new AbortController();
     api('/auth/me', { signal: c.signal }).then(u => { if (sessionValid(epoch)) setUser(u); }).catch(() => {})
@@ -374,6 +378,8 @@ export default function App() {
     </Drawer> : <aside className="sq-sidebar">{sidebar}</aside>}
     <main className={`sq-main ${view === 'document' ? 'is-doc' : ''}`}>
       {header}
+      {staleServer && <div className="sq-error"><Alert type="error" showIcon title="Отвечает старая версия сервера"
+        description={<>Похоже, всё ещё работает прежний сервер (например, Python-версия), поэтому анализ и Qwen не работают. Остановите его (Ctrl+C в его терминале) и запустите заново: <code>bash start.sh</code>. Новый start.sh останавливает старый сервер сам.</>} /></div>}
       {error && <div className="sq-error"><ErrorBox error={error} /></div>}
       <div className="sq-content">
         {view === 'library' && <LibraryScreen documents={documents} failed={failed} filters={libFilters} setFilters={setLibFilters} query={query}

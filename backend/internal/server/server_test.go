@@ -502,7 +502,7 @@ func TestRejectedFilesAndSafeProfilePhoto(t *testing.T) {
 
 func TestDemoAndHealth(t *testing.T) {
 	c := newClient(t, newTestServer(t))
-	if r := c.do("GET", "/api/health", nil); !strings.Contains(string(r.body), `"ok"`) {
+	if r := c.do("GET", "/api/health", nil); !strings.Contains(string(r.body), `"ok"`) || !strings.Contains(string(r.body), `"server":"go"`) {
 		t.Fatal("health")
 	}
 	r := c.do("POST", "/api/auth/demo", map[string]any{})
